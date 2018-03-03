@@ -17,5 +17,5 @@ _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d
 
 ### Example
 ```
-_watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
+_watch = ('https://www.upstreamsite.org/download')
 ```
