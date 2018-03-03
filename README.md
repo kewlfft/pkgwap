@@ -1,2 +1,2 @@
 # pkgwap
-PKGbuild Watch And Push - Scan directory for PKGBUILDs, watch for upstream updates and push
+**PKG**BUILD **w**atch **a**nd **p**ush: scan directory for PKGBUILDs, watch for upstream updates and push
