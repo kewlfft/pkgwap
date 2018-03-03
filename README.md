@@ -6,7 +6,14 @@ The objective with _pkgwap_ is to ease and automate as much as possible the upda
 
 * The upstream version can be successfully guessed for `github.com` projects and `python` packages.
 
-* It is possible to enrich the PKGBUILD with an option named `_watch` providing an _URL_ where the latest version number can be found and the associated _regular expression_ to capture it in the page.
+* The PKGBUILD can be enriched with an option named `_watch` providing an _URL_ where the latest version number can be found and the associated _regular expression_ to capture it in the page.
+
+### Example
+```
+_watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
+```
+
+* If only an _URL_ is provided to `_watch` it will calculate the hash of the page and will warn in case the upstream _URL_ is changed next time **pkgwap** is run.
 
 ### Example
 ```
