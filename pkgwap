@@ -1,0 +1,539 @@
+#!/usr/bin/python3
+
+"""
+pkgwap author
+---------------
+Kewl <xrjy@nygb.rh.bet(rot13)>
+
+Contributions
+-------------
+1. pkgcheck
+pkgwap is a fork of pkgcheck (https://github.com/onny/pkgcheck)
+Jonas Heinrich <onny@project-insanity.org>
+
+2. parched
+The PKGBUILD class used by pkgwap is a fork of parched (https://github.com/sebnow/parched)
+Copyright (c) 2009 Sebastian Nowicki <sebnow@gmail.com>
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+Package dependencies
+--------------------
+python-xdg
+
+Comments
+--------
+- validate pkgbuild with namcap
+- ruby md5 parallel requests http://jue.li/crux/ck4up/
+- print summary at the end like x packages scanned, x outdated
+- option: --ignore <packages>
+- packages dict is still empty at the end :/
+- parse flagged out of date in AUR
+- unable to parse array of pkgbuilds
+- strict and looseversion: http://stackoverflow.com/questions/1714027/version-number-comparison
+"""
+
+import os
+import re
+import argparse
+import hashlib
+import configparser  # store checksums to .~/local/share/pkgwap
+import xdg.BaseDirectory as basedir  # xdg basedir where to store program data
+import time
+from distutils.version import LooseVersion
+# import AUR.RPC as AUR # pyhton3-aur
+from datetime import datetime
+import urllib.request
+import urllib.error
+import shlex
+import fileinput
+import subprocess
+import json
+import sys
+
+__version__ = "0.20"
+config = configparser.ConfigParser()
+
+parser = argparse.ArgumentParser(description='Scan directory for PKGBUILDs, watch for upstream updates and push.')
+parser.add_argument('-u', '--update', help='update the PKGBUILD if new upstream version is found', action="store_true")
+parser.add_argument('-p', '--push', help='push the PKGBUILD in the AUR if local is more recent', action="store_true")
+parser.add_argument('-f', '--force', help='force package update or push', action="store_true")
+parser.add_argument('-w', '--warningonly', help='list only the packages with new upstream version', action="store_true")
+parser.add_argument('-l', '--level', type=int, default=1, dest='level', nargs=1, help='recursion depth for the file crawler')
+parser.add_argument('-v', '--version', help='print version of pkgwap', action='version', version='%(prog)s {}'.format(__version__))
+parser.add_argument('DIR', default='.', nargs='?', help='directory or file containing PKGBUILD(s)')
+args = parser.parse_args()
+if args.force:
+    if args.DIR == '.':
+        parser.error("-f requires a specific DIR to be provided")
+    args.level = 0
+
+
+class PKGBUILD:
+    """The :class:`PKGBUILD` class provides information about a package by parsing a :manpage:`PKGBUILD(5)` file.
+    To instantiate a :class:`PKGBUILD` object, pass the package's file path in the constructor::
+
+        >>> package = PKGBUILD("PKGBUILD")
+
+    The packages metadata can then be accessed directly::
+
+        >>> print package
+        "foo 1.0-1"
+        >>> print package.description
+        "Example package"
+    """
+    _symbol_regex = re.compile(r"\$(?P<name>{[\w\d_]+}|[\w\d]+)")
+
+    def __init__(self, name=None, fileobj=None):
+        super(PKGBUILD, self).__init__()
+        self.install = ""
+        self.checksums = {
+            'md5': [],
+            'sha1': [],
+            'sha256': [],
+            'sha384': [],
+            'sha512': [],
+        }
+        self.noextract = []
+        self.sources = []
+        self.makedepends = []
+
+        # Symbol lookup table
+        self._var_map = {
+            'pkgbase': 'base',
+            'pkgname': 'name',
+            'pkgver': 'version',
+            'pkgdesc': 'description',
+            'pkgrel': 'release',
+            'source': 'sources',
+            'arch': 'architectures',
+            'license': 'licenses',
+        }
+        self._checksum_fields = (
+            'md5sums',
+            'sha1sums',
+            'sha256sums',
+            'sha384sums',
+            'sha512sums',
+        )
+        # Symbol table
+        self._symbols = {}
+
+        if not name:
+            raise ValueError("nothing to open")
+        with open(name, "r") as fileobj:
+            self._parse(fileobj)
+        # Extension - added useful variables
+        self.path = name
+        self.dir = os.path.dirname(self.path)
+
+    def _handle_assign(self, token):
+        var, equals, value = token.strip().partition('=')
+        # Is it an array?
+        if value[0] == '(' and value[-1] == ')':
+            self._symbols[var] = self._clean_array(value)
+        else:
+            self._symbols[var] = self._clean(value)
+
+    def _parse(self, fileobj):
+        """Parse PKGBUILD"""
+        if hasattr(fileobj, "seek"):
+            fileobj.seek(0)
+        parser = shlex.shlex(fileobj, posix=True)
+        parser.whitespace_split = True
+        in_function = False
+        while 1:
+            token = parser.get_token()
+            if token is None or token == '':
+                break
+            # Skip escaped newlines and functions
+            if token == '\n' or in_function:
+                continue
+            # Special case:
+            # Array elements are dispersed among tokens, we have to join
+            # them first
+            if token.find("=(") >= 0 and not token.rfind(")") >= 0:
+                in_array = True
+                elements = []
+                while in_array:
+                    _token = parser.get_token()
+                    if _token == '\n':
+                        continue
+                    if _token[-1] == ')':
+                        _token = '"%s")' % _token.strip(')')
+                        token = token.replace('=(', '=("', 1) + '"'
+                        token = " ".join((token, " ".join(elements), _token))
+                        in_array = False
+                    else:
+                        elements.append('"%s"' % _token.strip())
+            # Assignment
+            if re.match(r"^[\w\d_]+=", token):
+                self._handle_assign(token)
+            # Function definitions
+            elif token == '{':
+                in_function = True
+            elif token == '}' and in_function:
+                in_function = False
+        self._substitute()
+        self._assign_local()
+        if self.release:
+            self.release = int(self.release)
+
+    def _clean(self, value):
+        """Pythonize a bash string"""
+        return " ".join(shlex.split(value))
+
+    def _clean_array(self, value):
+        """Pythonize a bash array"""
+        return shlex.split(value.strip('()'))
+
+    def _replace_symbol(self, matchobj):
+        """Replace a regex-matched variable with its value"""
+        symbol = matchobj.group('name').strip("{}")
+        # If the symbol isn't found fallback to an empty string, like bash
+        try:
+            value = self._symbols[symbol]
+        except KeyError:
+            value = ''
+        # BUG: Might result in an infinite loop, oops!
+        return self._symbol_regex.sub(self._replace_symbol, value)
+
+    def _substitute(self):
+        """Substitute all bash variables within values with their values"""
+        for symbol in self._symbols:
+            value = self._symbols[symbol]
+            # FIXME: This is icky
+            if isinstance(value, str):
+                result = self._symbol_regex.sub(self._replace_symbol, value)
+            else:
+                result = [self._symbol_regex.sub(self._replace_symbol, x) for x in value]
+            self._symbols[symbol] = result
+
+    def _assign_local(self):
+        """Assign values from _symbols to PKGBUILD variables"""
+        for var in self._symbols:
+            value = self._symbols[var]
+            if var in self._checksum_fields:
+                key = var.replace('sums', '')
+                self.checksums[key] = value
+            else:
+                if var in self._var_map:
+                    var = self._var_map[var]
+                setattr(self, var, value)
+
+    def _source_lookup(self, matchex):
+        for symbol in self._symbols:
+            if symbol.startswith('source'):
+                valuelist = self._symbols[symbol]
+                if type(valuelist) == list:
+                    for value in valuelist:
+                        if re.search(matchex, value):
+                            return value
+
+
+def url_json(url):
+    try:
+        r = urllib.request.urlopen(url)
+    except urllib.error.URLError:
+        return
+    rj = json.load(r)
+    return rj
+
+
+def url_regex(url, regex):
+    try:
+        r = urllib.request.urlopen(url).read()
+    except urllib.error.URLError:
+        return
+    matchObject = re.search(regex, r.decode("utf-8"))
+    if matchObject:
+        return matchObject.group(1)
+
+
+def url_md5(url):
+    try:
+        r = urllib.request.urlopen(url).read()
+    except urllib.error.URLError:
+        return
+    return hashlib.md5(r).hexdigest()
+
+
+def check_md5(pkgname, md5sum):
+    configname = "{}/{}.session".format(basedir.xdg_data_home, os.path.basename(__file__))
+    ts = time.time()
+    changednow = "changed, initialized"
+    if config.read(configname):
+        if pkgname in config:
+            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%Y-%m-%d')
+            if config[pkgname]['md5sum'] == md5sum:
+                return "unchanged since " + changedlast
+            else:
+                return "changed since " + changedlast
+        else:
+            config[pkgname] = {'md5sum': md5sum, 'lastchecked': str(ts)}
+            with open(configname, 'w') as configfile:
+                config.write(configfile)
+            return changednow
+    else:
+        config[pkgname] = {'md5sum': md5sum, 'lastchecked': str(ts)}
+        with open(configname, 'w') as configfile:
+            config.write(configfile)
+        return changednow
+
+
+def is_loose(ver):
+    return ver[0].isdigit()
+
+
+def is_canonical(version):
+    return re.match(r'^([1-9]\d*!)?(0|[1-9]\d*)(\.(0|[1-9]\d*))*((a|b|rc)(0|[1-9]\d*))?(\.post(0|[1-9]\d*))?(\.dev(0|[1-9]\d*))?$', str(version)) is not None
+
+
+def isnew_version(v, w):  # return if v>w // 0: no, 1: new, 3: error
+    if not v or v.startswith('error'):
+        return 3  # FAIL
+    if v.startswith('unchanged'):
+        return 0
+    if v.startswith('changed'):
+        return 1
+    return LooseVersion(v) > LooseVersion(w)  # True:1: WARNING // False:0: OKGREEN
+
+
+class PKGmulti:
+    def __init__(self):
+        # AUR: aurweb RPC interface (https://aur.archlinux.org/rpc.php)
+        self.url = "https://aur.archlinux.org/rpc.php/rpc/?v=5&type=info"
+        self.aurverrel = {}
+        self.pkglist = []
+
+    def getaurversions(self):
+        for pb in self.pkglist:
+            self.url += "&arg[]={}".format(pb.name[0] if type(pb.name) == list else pb.name)
+        rjson = url_json(self.url)
+        for i in range(rjson['resultcount']):
+            self.aurverrel[rjson["results"][i]["Name"]] = rjson["results"][i]["Version"]
+
+
+class pkgwap:
+    def __init__(self, mypkgbuild, pkgm):
+        if not mypkgbuild:
+            self.pkgname = 'Package name'
+            self.pkgverrel = 'Local'
+            self.aurverrel = 'AUR'
+            self.pkgaursame = ''
+            self.upstreamver = 'Upstream'
+            return
+        self.makepkg_done = False
+        self.srcinfo_done = False
+        self.pkgbuild = mypkgbuild
+        self.pkgbuildpath = mypkgbuild.path
+        self.pkgbuilddir = mypkgbuild.dir
+        self.pkgver = mypkgbuild.version
+        self.pkgrel = mypkgbuild.release
+        self.pkgverrel = self.buildverrel()
+
+        self.pkgname = mypkgbuild.name[0] if type(mypkgbuild.name) == list else mypkgbuild.name
+        try:
+            self.url = mypkgbuild.url
+        except AttributeError:
+            self.url = ""
+        self.aurverrel = pkgm.aurverrel[self.pkgname]
+        watch_params = mypkgbuild._symbols.get('_watch')
+        if watch_params:
+            if len(watch_params) == 2:
+                self.upstreamver = url_regex(watch_params[0], watch_params[1])
+            elif len(watch_params) == 1:
+                self.upstreamver = check_md5(self.pkgname, url_md5(watch_params[0]))
+        else:
+            self.upstreamver = self.autofindver_upstream()
+
+    def githubversion(self, url, m):
+        res = re.search(m, url)
+        user = res.group(1)
+        repo = res.group(2)
+        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
+        if is_canonical(ver):
+            return ver
+        js = url_json("https://api.github.com/repos/{}/{}/commits".format(user, repo))
+        return "r{}.{}".format(len(js), js[0]["sha"][:7])
+
+    def parseurl_version(self, url):
+        if not url:
+            return
+        if "github.com" in url:
+            ver = self.githubversion(url, r'github.com/([^/#.]+)/([^/#.]+)')
+            return ver
+        if "github.io" in url:
+            ver = self.githubversion(url, r'([^/#.]+).github.io/([^/#.]+)')
+            return ver
+
+    def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
+        # Python
+        if self.pkgname.startswith('python-') or self.pkgname.startswith('python2-'):
+            try:
+                ver = url_json("https://pypi.python.org/pypi/{}/json".format(self.pkgname.split('-', 1)[1]))["info"]["version"]
+            except (KeyError, TypeError):
+                ver = None
+            if is_canonical(ver):
+                return ver
+        # GitHub
+        ver = self.parseurl_version(self.url)
+        if ver:
+            return ver
+        ver = self.parseurl_version(self.pkgbuild._source_lookup(r"github\.(com|io)"))
+        if ver:
+            return ver
+        if self.url:
+            return check_md5(self.pkgname, url_md5(self.url))
+        return "unable to check upstream"
+
+    def isdiff_pkggaur(self):
+        hashaur = url_md5('https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}'.format(self.pkgname))
+        with open(os.path.join(os.path.dirname(self.pkgbuildpath), '.SRCINFO'), "rb") as f:
+            data = f.read()
+        hashpkg = hashlib.md5(data).hexdigest()
+        self.pkgaursame = '=' if hashaur == hashpkg else '!='
+        return hashaur != hashpkg  # same:false=0, diff:true=1
+
+    def print_line(self, state):
+        colordict = {'OKGREEN': 92, 'WARNING': 93, 'FAIL': 91, 'HEADER': 95, 'UNDERLINE': 4, 'OKBLUE': 94, 'ENDC': 0, 'BOLD': 1}
+        print('\033[{}m{:35}{:15}{:4}{:15}{:15}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver))
+
+    def buildverrel(self):
+        return "{}-{}".format(self.pkgver, self.pkgrel)
+
+    def update_pkgbuild(self):
+        op = 0
+        for line in fileinput.input([self.pkgbuildpath], inplace=1, backup='.bak'):
+            n = line.rstrip('\n')
+            if n.startswith("pkgver="):
+                n = "pkgver={}".format(self.upstreamver)
+                op += 1
+            elif n.startswith("pkgrel="):
+                if self.upstreamver != self.pkgver:
+                    rel = 1
+                else:
+                    rel = self.pkgrel + 1
+                n = "pkgrel={}".format(rel)
+                op += 1
+            print(n)
+        self.pkgver = self.upstreamver
+        self.pkgrel = rel
+        self.pkgverrel = self.buildverrel()
+        print('\033[92mPKGBUILD {} fields updated\033[0m'.format(op))
+        return op != 2  # 2 operations:false:0
+
+    def update_pkgsum(self):
+        process = subprocess.run(['updpkgsums'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)  # pipe stdout, show stderr
+        # output, error = process.communicate()
+        return process.returncode
+
+    def build_srcinfo(self):
+        if self.srcinfo_done:
+            return
+        with open(os.path.join(self.pkgbuilddir, '.SRCINFO'), 'w') as file:
+            process = subprocess.run(['makepkg', '--printsrcinfo'], stdout=file, cwd=self.pkgbuilddir)  # save stdout, show stderr
+        # output, error = process.communicate()
+        rc = process.returncode
+        self.srcinfo_done = rc == 0
+        return rc
+
+    def makepkg(self):
+        if self.makepkg_done:
+            return
+        process = subprocess.run(['makepkg', '--clean'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)
+        rc = process.returncode
+        self.makepkg_done = rc == 0
+        return rc
+
+    def git_commit(self, msg):
+        process = subprocess.run(['git', 'commit', '--all', "--message={}".format(msg)], cwd=self.pkgbuilddir)
+        return process.returncode
+
+    def git_push(self):
+        process = subprocess.run(['git', 'push'], cwd=self.pkgbuilddir)
+        return process.returncode
+
+    def pkg_update(self):
+        if self.update_pkgbuild():
+            return 1
+        if self.update_pkgsum():
+            return 1
+        if self.build_srcinfo():
+            return 1
+        if self.makepkg():
+            return 1
+
+    def aur_push(self):
+        if self.build_srcinfo():
+            return 1
+        if self.makepkg():
+            return 1
+        if self.git_commit('Update to version {}'.format(self.pkgverrel)):
+            return 1
+        if self.git_push():
+            return 1
+
+
+def complete(pkgm):
+    for pkgbuild in pkgm.pkglist:
+        package = pkgwap(pkgbuild, pkgm)
+        isdiff = package.isdiff_pkggaur()
+        isnew_ups = isnew_version(package.upstreamver, package.pkgver)
+        isnew_aur = isnew_version(package.aurverrel, package.pkgverrel)
+        isnew_sum = isnew_aur + isnew_ups + isdiff
+        if isnew_sum > 2:
+            package.print_line('FAIL')
+            continue
+        if isnew_sum == 0 and not args.warningonly:
+            package.print_line('OKGREEN')
+        else:
+            package.print_line('WARNING')
+        if args.update and ((isnew_ups == 1 and is_canonical(package.upstreamver)) or args.force):
+            if package.pkg_update():
+                sys.exit(1)  # update error
+        if args.push and (isnew_version(package.pkgverrel, package.aurverrel) or args.force):
+            if package.aur_push():
+                sys.exit(1)  # aur_push error
+        if isnew_aur or isdiff:
+            # fetch aur
+            pass
+
+
+def walklevel(mydir, level):
+    mydir = mydir.rstrip(os.path.sep)
+    assert os.path.isdir(mydir)
+    num_sep = mydir.count(os.path.sep)
+    for root, dirs, files in os.walk(mydir):
+        yield root, dirs, files
+        num_sep_this = root.count(os.path.sep)
+        if num_sep + level <= num_sep_this:
+            del dirs[:]
+
+
+def scandir(path, level):
+    if not os.path.exists(path):
+        print("error: directory does not exists")
+        return
+    pkgwap(None, None).print_line('HEADER')
+    pkgm = PKGmulti()
+    # create list of pkgbuilds (pkgm.pkglist)
+    for (root, dirs, files) in walklevel(path, level):
+        if "PKGBUILD" in files:
+            try:
+                pkgm.pkglist.append(PKGBUILD(os.path.join(root, 'PKGBUILD')))
+            except (ValueError, TypeError):
+                pass
+    # query AUR RPC from all pkgbuilds version
+    pkgm.getaurversions()
+    complete(pkgm)
+
+
+# Start scanning the directory for PKGBUILDs
+scandir(args.DIR, args.level)
