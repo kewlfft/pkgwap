@@ -13,7 +13,7 @@ The objective with _pkgwap_ is to ease and automate as much as possible the upda
 _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
 ```
 
-* If only an _URL_ is provided to `_watch` it will calculate the hash of the page and will warn in case the upstream _URL_ is changed next time **pkgwap** is run.
+* If only an _URL_ is provided to `_watch` it will calculate the hash of the page and will warn in case the upstream _URL_ is changed next time _pkgwap_ is run.
 
 ### Example
 ```
