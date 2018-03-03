@@ -1,5 +1,7 @@
 # pkgwap
-**PKG**BUILD **w**atch **a**nd **p**ush: scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR
+**PKG**BUILD **w**atch **a**nd **p**ush
+
+Scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR
 
 ## Goal
 The objective of _pkgwap_ is to ease and automate as much as possible the update of user packages in the AUR. It scans directories for PKGBUILD files and compare them with the current AUR version and the upstream version.
