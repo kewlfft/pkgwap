@@ -6,7 +6,7 @@ Scan directory for PKGBUILDs, look for upstream updates, update the description 
 ## Goal
 The objective of _pkgwap_ is to ease and automate as much as possible the update of user packages in the AUR. It scans directories for PKGBUILD files and compare them with the current AUR version and the upstream version.
 
-* The upstream version can be successfully guessed for `github.com` projects and `python` packages.
+* The upstream version can be successfully guessed for **GitHub** projects and **Python** packages.
 
 * The PKGBUILD can be enriched with an option named `_watch` providing an _URL_ where the latest version number can be found and the associated _regular expression_ to capture it in the page.
 ```
@@ -19,12 +19,10 @@ _watch = ('https://www.upstreamsite.org/download')
 ```
 
 ## Usage
-Run `pkgwap -h` to see the full list of options.
-
-The basic usage consists in:
+Run `pkgwap -h` to see the full list of options. The basic usage consists in:
 ```
 $ pkgwap directory_name
 ```
-pkgwap recurses by default into directory_name and analyses the PKGBUILD files found.
+_pkgwap_ recurses by default into `directory_name` and analyses the `PKGBUILD` files found.
 
 An environment variable `GITHUB_TOKEN` can be set to a GitHub OAuth token in order to raise the request limit for the GitHub API.
