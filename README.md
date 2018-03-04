@@ -1,5 +1,5 @@
 # pkgwap
-_**pkg**build **w**atch **a**nd **p**ush_
+**PKG**BUILD **W**atch **A**nd **P**ush
 
 Scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR
 
