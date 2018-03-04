@@ -18,5 +18,13 @@ _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d
 _watch = ('https://www.upstreamsite.org/download')
 ```
 
-## Instructions
+## Usage
+Run `pkgwap -h` to see the full list of options.
+
+The basic usage consists in:
+```
+$ pkgwap directory_name
+```
+pkgwap recurses by default into directory_name and analyses the PKGBUILD files found.
+
 An environment variable `GITHUB_TOKEN` can be set to a GitHub OAuth token in order to raise the request limit for the GitHub API.
