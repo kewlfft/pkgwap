@@ -1,5 +1,5 @@
 # pkgwap
-**pkg**build **w**atch **a**nd **p**ush
+_**pkg**build **w**atch **a**nd **p**ush_
 
 Scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR
 
@@ -17,3 +17,6 @@ _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d
 ```
 _watch = ('https://www.upstreamsite.org/download')
 ```
+
+## Instructions
+An environment variable `GITHUB_TOKEN` can be set to a GitHub OAuth token in order to raise the request limit for the GitHub API.
