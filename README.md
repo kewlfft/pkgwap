@@ -8,7 +8,9 @@ The objective of _pkgwap_ is to ease and automate as much as possible the update
 
 * The latest upstream version can be figured out for **GitHub** projects and **Python** packages.
 
-* The PKGBUILD can be enriched with an option named `_watch` providing an _URL_ where the latest version number can be found and the associated _regular expression_ to capture it within the HTML page.
+* The PKGBUILD can be enriched with an option named `_watch` providing:
+    1. an _URL_ where the latest version number can be found,
+    2. the associated _regular expression_ to capture it within the HTML page.
 ```
 _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
 ```
@@ -23,6 +25,6 @@ Run `pkgwap -h` to see the full list of options. The basic usage consists in:
 ```
 $ pkgwap directory_name
 ```
-_pkgwap_ checks into `directory_name` and analyses the `PKGBUILD` files found, the sub-directories are also recursively scanned.
+where _pkgwap_ checks into `directory_name` and analyses the `PKGBUILD` files found, the sub-directories are also recursively scanned.
 
 An environment variable `GITHUB_TOKEN` can be set to a GitHub OAuth token in order to raise the request limit for the GitHub API.

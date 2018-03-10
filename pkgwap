@@ -44,7 +44,8 @@ Notes
 - strict and looseversion: http://stackoverflow.com/questions/1714027/version-number-comparison
 - version comparison https://www.python.org/dev/peps/pep-0386/
 - better handle VCS packages (https://wiki.archlinux.org/index.php/VCS_package_guidelines)
-- find inspiration in aur-out-of-date (https://github.com/simon04/aur-out-of-date)
+- inspiration in aur-out-of-date (https://github.com/simon04/aur-out-of-date)
+- inspiration in nvchecker (https://github.com/lilydjwg/nvchecker/blob/master/nvchecker/source/github.py)
 """
 
 import os
@@ -358,7 +359,10 @@ class pkgwap:
             self.url = mypkgbuild.url
         except AttributeError:
             self.url = ""
-        self.aurverrel = pkgm.aurverrel[self.pkgname]
+        try:
+            self.aurverrel = pkgm.aurverrel[self.pkgname]
+        except KeyError:
+            self.aurverrel = ""
         watch_params = mypkgbuild._symbols.get('_watch')
         if watch_params:
             if len(watch_params) == 2:
