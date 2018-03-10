@@ -511,8 +511,8 @@ def complete(pkgm):
         package = pkgwap(pkgbuild, pkgm)
         isdiff = package.isdiff_pkggaur()
         isnew_ups = isnew_version(package.upstreamver, package.pkgver)
-        isnew_aur = isnew_version(package.aurverrel, package.pkgverrel)
-        isnew_sum = isnew_aur + isnew_ups + isdiff
+        isnew_aur = isnew_version(package.pkgverrel, package.aurverrel)
+        isnew_sum = isnew_ups + isnew_aur + isdiff
         if isnew_sum > 2:
             package.print_line('FAIL')
             continue
