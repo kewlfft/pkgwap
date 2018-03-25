@@ -31,6 +31,8 @@ Package dependencies
 --------------------
 python-xdg
 python-setuptools
+python-gobject
+libnotify
 
 Notes
 -----
@@ -47,7 +49,6 @@ Notes
 - inspiration in aur-out-of-date (https://github.com/simon04/aur-out-of-date)
 - inspiration in nvchecker (https://github.com/lilydjwg/nvchecker/blob/master/nvchecker/source/github.py)
 """
-
 import os
 import re
 import argparse
@@ -65,22 +66,28 @@ import subprocess
 import json
 import sys
 from packaging import version
+import gi
+gi.require_version('Notify', '0.7')
+from gi.repository import Notify
+
 
 __version__ = "0.2.0"
+__basefile__ = os.path.basename(__file__)
 config = configparser.ConfigParser()
 
 parser = argparse.ArgumentParser(description='Scan directory for PKGBUILDs, watch for upstream updates and push.')
 parser.add_argument('-u', '--update', help='update the PKGBUILD if new upstream version is found', action="store_true")
 parser.add_argument('-p', '--push', help='push the PKGBUILD in the AUR if local is more recent', action="store_true")
 parser.add_argument('-f', '--force', help='force package update or push', action="store_true")
-parser.add_argument('-w', '--warningonly', help='list only the packages with new upstream version', action="store_true")
+parser.add_argument('-w', '--warningonly', help='only output packages with a warning message', action="store_true")
 parser.add_argument('-l', '--level', type=int, default=1, dest='level', nargs=1, help='recursion depth for the file crawler')
-parser.add_argument('-v', '--version', help='print version of pkgwap', action='version', version='%(prog)s {}'.format(__version__))
+parser.add_argument('-n', '--notify', help='notify if new version', action="store_true")
+parser.add_argument('-v', '--version', help='print version of {}'.format(__basefile__), action='version', version='%(prog)s {}'.format(__version__))
 parser.add_argument('DIR', default='.', nargs='?', help='directory or file containing PKGBUILD(s)')
 args = parser.parse_args()
 if args.force:
-    if args.DIR == '.':
-        parser.error("-f requires a specific DIR to be provided")
+    # if args.DIR == '.':
+    #     parser.error("-f requires a specific DIR to be provided")
     args.level = 0
 
 
@@ -210,6 +217,7 @@ class PKGBUILD:
             value = self._symbols[symbol]
         except KeyError:
             value = ''
+        # substitute the symbol with the value
         # BUG: Might result in an infinite loop, oops!
         return self._symbol_regex.sub(self._replace_symbol, value)
 
@@ -292,7 +300,7 @@ def check_md5(pkgname, md5sum):
             else:
                 return "changed since " + changedlast
         else:
-            config[pkgname] = {'md5sum': md5sum, 'lastchecked': str(ts)}
+            config[pkgname] = {'md5sum': str(md5sum), 'lastchecked': str(ts)}
             with open(configname, 'w') as configfile:
                 config.write(configfile)
             return changednow
@@ -344,7 +352,9 @@ class pkgwap:
             self.aurverrel = 'AUR'
             self.pkgaursame = ''
             self.upstreamver = 'Upstream'
+            self.isnew = 'Status'
             return
+        self.isnew = 0
         self.makepkg_done = False
         self.srcinfo_done = False
         self.pkgbuild = mypkgbuild
@@ -377,7 +387,6 @@ class pkgwap:
         res = re.search(m, url)
         user = res.group(1)
         repo = res.group(2)
-        # ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
         ver_github = github_api(user, repo, "releases/latest")
         try:
             ver = re.search('[a-zA-Z_-]*(\d[\d.]*\d+)', ver_github["tag_name"]).group(1)
@@ -385,7 +394,12 @@ class pkgwap:
             ver = None
         if is_canonical(ver):
             return ver
+        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
+        if is_canonical(ver):
+            return ver
         js = github_api(user, repo, "commits")
+        if not js:
+            return
         return "r{}.{}".format(len(js), js[0]["sha"][:7])
 
     def parseurl_version(self, url):
@@ -399,7 +413,7 @@ class pkgwap:
             return ver
 
     def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
-        # Python
+        # Python - look in pypi based on pkgname
         if self.pkgname.startswith('python-') or self.pkgname.startswith('python2-'):
             try:
                 ver = url_json("https://pypi.python.org/pypi/{}/json".format(self.pkgname.split('-', 1)[1]))["info"]["version"]
@@ -407,7 +421,7 @@ class pkgwap:
                 ver = None
             if is_canonical(ver):
                 return ver
-        # GitHub
+        # GitHub - look with GitHub API based on user and repo parsed from url
         ver = self.parseurl_version(self.url)
         if ver:
             return ver
@@ -418,7 +432,7 @@ class pkgwap:
             return check_md5(self.pkgname, url_md5(self.url))
         return "unable to check upstream"
 
-    def isdiff_pkggaur(self):
+    def isdiff_pkgaur(self):
         hashaur = url_md5('https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}'.format(self.pkgname))
         with open(os.path.join(os.path.dirname(self.pkgbuildpath), '.SRCINFO'), "rb") as f:
             data = f.read()
@@ -426,9 +440,13 @@ class pkgwap:
         self.pkgaursame = '=' if hashaur == hashpkg else '!='
         return hashaur != hashpkg  # same:false=0, diff:true=1
 
-    def print_line(self, state):
+    def print_line(self):
         colordict = {'OKGREEN': 92, 'WARNING': 93, 'FAIL': 91, 'HEADER': 95, 'UNDERLINE': 4, 'OKBLUE': 94, 'ENDC': 0, 'BOLD': 1}
-        print('\033[{}m{:35}{:15}{:4}{:15}{:15}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver))
+        if type(self.isnew) is str:
+            state = 'HEADER'
+        else:
+            state = 'OKGREEN' if self.isnew == 0 else 'WARNING'
+        print('\033[{}m{:35}{:15}{:4}{:15}{:15}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
 
     def buildverrel(self):
         return "{}-{}".format(self.pkgver, self.pkgrel)
@@ -472,7 +490,7 @@ class pkgwap:
     def makepkg(self):
         if self.makepkg_done:
             return
-        process = subprocess.run(['makepkg', '--clean'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)
+        process = subprocess.run(['makepkg', '--force', '--clean'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)
         rc = process.returncode
         self.makepkg_done = rc == 0
         return rc
@@ -506,27 +524,31 @@ class pkgwap:
             return 1
 
 
-def complete(pkgm):
+def scanpkglist(pkgm):
     for pkgbuild in pkgm.pkglist:
         package = pkgwap(pkgbuild, pkgm)
-        isdiff = package.isdiff_pkggaur()
-        isnew_ups = isnew_version(package.upstreamver, package.pkgver)
-        isnew_aur = isnew_version(package.pkgverrel, package.aurverrel)
-        isnew_sum = isnew_ups + isnew_aur + isdiff
-        if isnew_sum > 2:
-            package.print_line('FAIL')
-            continue
-        if isnew_sum == 0 and not args.warningonly:
-            package.print_line('OKGREEN')
-        else:
-            package.print_line('WARNING')
-        if args.update and ((isnew_ups == 1 and is_canonical(package.upstreamver)) or args.force):
+        if package.isdiff_pkgaur():
+            # 1: difference between local and AUR .SRCINFO
+            package.isnew |= 1
+        if isnew_version(package.upstreamver, package.pkgver):
+            # 2: new upstream version compared to local
+            package.isnew |= 2
+        if isnew_version(package.pkgverrel, package.aurverrel):
+            # 4: new local version compared to AUR
+            package.isnew |= 4
+        if not args.warningonly or package.isnew > 0:
+            package.print_line()
+        if package.isnew > 0 and args.notify:
+            notif = Notify.Notification.new(package.pkgname, 'Status: {}'.format(package.isnew), 'dialog-information')
+            notif.set_timeout(1000 * 3600 * 12)
+            notif.show()
+        if args.update and (((package.isnew & 2) and is_canonical(package.upstreamver)) or args.force):
             if package.pkg_update():
                 sys.exit(1)  # update error
         if args.push and (isnew_version(package.pkgverrel, package.aurverrel) or args.force):
             if package.aur_push():
                 sys.exit(1)  # aur_push error
-        if isnew_aur or isdiff:
+        if package.isnew & 1:
             # fetch aur
             pass
 
@@ -546,7 +568,7 @@ def scandir(path, level):
     if not os.path.exists(path):
         print("error: directory does not exists")
         return
-    pkgwap(None, None).print_line('HEADER')
+    pkgwap(None, None).print_line()
     pkgm = PKGmulti()
     # create list of pkgbuilds (pkgm.pkglist)
     for (root, dirs, files) in walklevel(path, level):
@@ -557,8 +579,10 @@ def scandir(path, level):
                 pass
     # query AUR RPC from all pkgbuilds version
     pkgm.getaurversions()
-    complete(pkgm)
+    scanpkglist(pkgm)
 
 
 # Start scanning the directory for PKGBUILDs
+if args.notify:
+    Notify.init(__basefile__)
 scandir(args.DIR, args.level)
