@@ -294,7 +294,7 @@ def check_md5(pkgname, md5sum):
     changednow = "changed, initialized"
     if config.read(configname):
         if pkgname in config:
-            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%Y-%m-%d')
+            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%Y%m%d')
             if config[pkgname]['md5sum'] == md5sum:
                 return "unchanged since " + changedlast
             else:
@@ -375,10 +375,13 @@ class pkgwap:
             self.aurverrel = ""
         watch_params = mypkgbuild._symbols.get('_watch')
         if watch_params:
-            if len(watch_params) == 2:
-                self.upstreamver = url_regex(watch_params[0], watch_params[1])
-            elif len(watch_params) == 1:
-                self.upstreamver = check_md5(self.pkgname, url_md5(watch_params[0]))
+            if type(watch_params) == list:
+                if len(watch_params) == 2:
+                    self.upstreamver = url_regex(watch_params[0], watch_params[1])
+                elif len(watch_params) == 1:
+                    self.upstreamver = check_md5(self.pkgname, url_md5(watch_params[0]))
+            else:
+                self.upstreamver = "_watch not list"
         else:
             self.upstreamver = self.autofindver_upstream()
 
@@ -586,3 +589,5 @@ def scandir(path, level):
 if args.notify:
     Notify.init(__basefile__)
 scandir(args.DIR, args.level)
+if args.notify:
+    Notify.Notification.new(__basefile__, 'done', 'dialog-information').show()
