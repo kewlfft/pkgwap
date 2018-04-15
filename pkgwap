@@ -29,10 +29,7 @@ all copies or substantial portions of the Software.
 
 Package dependencies
 --------------------
-python-xdg
-python-setuptools
-python-gobject
-libnotify
+python-xdg python-setuptools python-gobject libnotify
 
 Notes
 -----
@@ -291,14 +288,14 @@ def url_md5(url):
 def check_md5(pkgname, md5sum):
     configname = "{}/{}.session".format(basedir.xdg_data_home, os.path.basename(__file__))
     ts = time.time()
-    changednow = "changed, initialized"
+    changednow = "initialized"
     if config.read(configname):
         if pkgname in config:
-            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%Y%m%d')
+            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%d%b')
             if config[pkgname]['md5sum'] == md5sum:
-                return "unchanged since " + changedlast
+                return "unchanged ({})".format(changedlast)
             else:
-                return "changed since " + changedlast
+                return "changed ({})".format(changedlast)
         else:
             config[pkgname] = {'md5sum': str(md5sum), 'lastchecked': str(ts)}
             with open(configname, 'w') as configfile:
@@ -453,7 +450,7 @@ class pkgwap:
             notif = Notify.Notification.new(self.pkgname, 'Status: {}'.format(self.isnew), 'dialog-information')
             notif.set_timeout(1000 * 3600 * 12)
             notif.show()
-        print('\033[{}m{:35}{:15}{:4}{:15}{:15}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
+        print('\033[{}m{:35}{:15}{:4}{:15}{:20}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
 
     def buildverrel(self):
         return "{}-{}".format(self.pkgver, self.pkgrel)
