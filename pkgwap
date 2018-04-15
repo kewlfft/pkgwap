@@ -29,6 +29,7 @@ all copies or substantial portions of the Software.
 
 Package dependencies
 --------------------
+In official Extra Repository:
 python-xdg python-setuptools python-gobject libnotify
 
 Notes
