@@ -1,21 +1,21 @@
 # pkgwap
 **PKG**BUILD **W**atch **A**nd **P**ush
 
-Scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR
+Scan directory for PKGBUILDs, look for upstream updates, update the description and push to the AUR.
 
 ## Goal
-The objective of _pkgwap_ is to ease and automate as much as possible the update of user packages in the AUR. It scans directories for PKGBUILD files and compare them with the current AUR version and the upstream version.
+The objective of _pkgwap_ is to ease and automate as much as possible the update of user packages in the AUR in a controlled manner. It scans local directories for PKGBUILD files and compare them with the current AUR version and the upstream version.
 
 * The latest upstream version can be figured out for **GitHub** projects and **Python** packages.
 
 * The PKGBUILD can be enriched with an option named `_watch` providing:
-    1. an _URL_ where the latest version number can be found,
+    1. the _URL_ where the latest version number can be found,
     2. the associated _regular expression_ to capture it within the HTML page.
 ```
 _watch = ('https://www.upstreamsite.org/download' '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
 ```
 
-* Only the _URL_ can also be provided in `_watch`, in this case the hash of the page is calculated and it will warn next time if the upstream _URL_ is modified.
+   * Alternatively, the _URL_ only can be provided in `_watch`, in this case the hash of the page is calculated and it will warn next time if the upstream _URL_ is modified.
 ```
 _watch = ('https://www.upstreamsite.org/download')
 ```

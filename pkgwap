@@ -32,7 +32,7 @@ Package dependencies
 In official Extra Repository:
 python-xdg python-setuptools python-gobject libnotify
 
-Notes
+To do
 -----
 - validate pkgbuild with namcap
 - ruby md5 parallel requests http://jue.li/crux/ck4up/
