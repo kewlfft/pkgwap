@@ -23,7 +23,7 @@ _watch = ('https://www.upstreamsite.org/download')
 
 ## Usage
 Run `pkgwap -h` to see the full list of options. The basic usage consists in:
-```Bash
+```bash
 $ pkgwap directory_name
 ```
 where _pkgwap_ checks into `directory_name` and analyses the `PKGBUILD` files found, the sub-directories are also recursively scanned.
