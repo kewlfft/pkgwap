@@ -478,7 +478,7 @@ class pkgwap:
         return op != 2  # 2 operations:false:0
 
     def update_pkgsum(self):
-        process = subprocess.run(['updpkgsums'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)  # pipe stdout, show stderr
+        process = subprocess.run(['updpkgsums'], cwd=self.pkgbuilddir)  # print stdout, print stderr
         # output, error = process.communicate()
         return process.returncode
 
@@ -495,7 +495,9 @@ class pkgwap:
     def makepkg(self):
         if self.makepkg_done:
             return
-        process = subprocess.run(['makepkg', '--force', '--clean'], stdout=subprocess.PIPE, cwd=self.pkgbuilddir)
+        process = subprocess.run(['makepkg', '--force', '--clean'], cwd=self.pkgbuilddir)
+        # add `stdout=subprocess.PIPE` parameter to capture stdout instead of printing it to stdout
+        # then `process.stdout.decode('utf-8')` contains the stdout string
         rc = process.returncode
         self.makepkg_done = rc == 0
         return rc
