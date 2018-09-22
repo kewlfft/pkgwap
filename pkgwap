@@ -69,7 +69,7 @@ gi.require_version('Notify', '0.7')
 from gi.repository import Notify
 
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __basefile__ = os.path.basename(__file__)
 config = configparser.ConfigParser()
 
@@ -254,7 +254,7 @@ class PKGBUILD:
 
 def github_api(user, repo, req):
     token = os.environ['GITHUB_TOKEN'] if 'GITHUB_TOKEN' in os.environ else None
-    return url_json("http://api.github.com/repos/{}/{}/{}".format(user, repo, req), token)
+    return url_json("https://api.github.com/repos/{}/{}/{}".format(user, repo, req), token)
 
 
 def url_json(url, token=None):
@@ -388,6 +388,7 @@ class pkgwap:
         res = re.search(m, url)
         user = res.group(1)
         repo = res.group(2)
+        # try with the api, version number in tag_name field
         ver_github = github_api(user, repo, "releases/latest")
         try:
             ver = re.search('[a-zA-Z_-]*(\d[\d.]*\d+)', ver_github["tag_name"]).group(1)
@@ -395,9 +396,11 @@ class pkgwap:
             ver = None
         if is_canonical(ver):
             return ver
+        # api tag_name failed, look in releases.atom
         ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
         if is_canonical(ver):
             return ver
+        # no release version found, use the commits field
         js = github_api(user, repo, "commits")
         if not js:
             return
