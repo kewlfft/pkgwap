@@ -51,8 +51,8 @@ import os
 import re
 import argparse
 import hashlib
-import configparser  # store checksums to .~/local/share/pkgwap
-import xdg.BaseDirectory as basedir  # xdg basedir where to store program data
+import configparser
+import xdg.BaseDirectory as basedir  # xdg basedir where to store checksums, ~/.local/share/pkgwap.session
 import time
 # import AUR.RPC as AUR # python3-aur
 from datetime import datetime
