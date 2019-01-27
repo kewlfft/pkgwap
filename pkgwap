@@ -69,7 +69,7 @@ gi.require_version('Notify', '0.7')
 from gi.repository import Notify
 
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 __basefile__ = os.path.basename(__file__)
 config = configparser.ConfigParser()
 
@@ -180,7 +180,8 @@ class PKGBUILD:
                     if _token == '\n':
                         continue
                     if _token[-1] == ')':
-                        _token = '"%s")' % _token.strip(')')
+                        #_token = '"%s")' % _token.strip(')')
+                        _token = '"{}")'.format(_token[:-1])
                         token = token.replace('=(', '=("', 1) + '"'
                         token = " ".join((token, " ".join(elements), _token))
                         in_array = False
@@ -201,7 +202,7 @@ class PKGBUILD:
 
     def _clean(self, value):
         """Pythonize a bash string"""
-        return " ".join(shlex.split(value))
+        return " ".join(shlex.split(value, posix=True))
 
     def _clean_array(self, value):
         """Pythonize a bash array"""
@@ -379,7 +380,7 @@ class pkgwap:
                 elif len(watch_params) == 1:
                     self.upstreamver = check_md5(self.pkgname, url_md5(watch_params[0]))
             else:
-                self.upstreamver = "_watch not list"
+                self.upstreamver = "_watch is not a list"
         else:
             self.upstreamver = self.autofindver_upstream()
 
