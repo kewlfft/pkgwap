@@ -202,7 +202,7 @@ class PKGBUILD:
 
     def _clean(self, value):
         """Pythonize a bash string"""
-        return " ".join(shlex.split(value, posix=True))
+        return " ".join(shlex.split(value, posix=False))
 
     def _clean_array(self, value):
         """Pythonize a bash array"""
