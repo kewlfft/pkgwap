@@ -180,7 +180,7 @@ class PKGBUILD:
                     if _token == '\n':
                         continue
                     if _token[-1] == ')':
-                        #_token = '"%s")' % _token.strip(')')
+                        # _token = '"%s")' % _token.strip(')')
                         _token = '"{}")'.format(_token[:-1])
                         token = token.replace('=(', '=("', 1) + '"'
                         token = " ".join((token, " ".join(elements), _token))
