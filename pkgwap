@@ -319,7 +319,9 @@ def is_canonical(version):
     return re.match(r'^([1-9]\d*!)?(0|[1-9]\d*)(\.(0|[1-9]\d*))*((a|b|rc)(0|[1-9]\d*))?(\.post(0|[1-9]\d*))?(\.dev(0|[1-9]\d*))?$', str(version)) is not None
 
 
-def isnew_version(v, w):  # return if v>w // 0: no, 1: new, 3: error
+def isnew_version(v, w):  # returns if v>w // 0: no, 1: new, 3: error
+    if v == 0:
+        return 0
     if not v or v.startswith('error'):
         return 3  # FAIL
     if v.startswith('unchanged'):
@@ -546,6 +548,7 @@ def scanpkglist(pkgm):
             package.isnew |= 1
         if isnew_version(package.upstreamver, package.pkgver):
             # 2: new upstream version compared to local
+            print("NEW", package.upstreamver, package.pkgver)
             package.isnew |= 2
         if isnew_version(package.pkgverrel, package.aurverrel):
             # 4: new local version compared to AUR
