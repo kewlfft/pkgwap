@@ -304,6 +304,7 @@ def check_md5(pkgname, md5sum):
                 config.write(configfile)
             return changednow
     else:
+        print(md5sum, ts)
         config[pkgname] = {'md5sum': md5sum, 'lastchecked': str(ts)}
         with open(configname, 'w') as configfile:
             config.write(configfile)
@@ -434,7 +435,9 @@ class pkgwap:
         if ver:
             return ver
         if self.url:
-            return check_md5(self.pkgname, url_md5(self.url))
+            urlmd5result = url_md5(self.url)
+            if urlmd5result is not None:
+                return check_md5(self.pkgname, url_md5(self.url))
         return "unable to check upstream"
 
     def isdiff_pkgaur(self):
