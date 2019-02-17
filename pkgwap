@@ -438,7 +438,7 @@ class pkgwap:
             urlmd5result = url_md5(self.url)
             if urlmd5result is not None:
                 return check_md5(self.pkgname, url_md5(self.url))
-        return "unable to check upstream"
+        return 0
 
     def isdiff_pkgaur(self):
         hashaur = url_md5('https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}'.format(self.pkgname))
@@ -458,7 +458,7 @@ class pkgwap:
             notif = Notify.Notification.new(self.pkgname, 'Status: {}'.format(self.isnew), 'dialog-information')
             notif.set_timeout(1000 * 3600 * 12)
             notif.show()
-        print('\033[{}m{:35}{:15}{:4}{:15}{:20}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
+        print('\033[{}m{:35}{:19}{:3}{:19}{:19}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
 
     def buildverrel(self):
         return "{}-{}".format(self.pkgver, self.pkgrel)
@@ -522,15 +522,15 @@ class pkgwap:
             return 1
         if self.update_pkgsum():
             return 1
-        if self.build_srcinfo():
-            return 1
         if self.makepkg():
+            return 1
+        if self.build_srcinfo():
             return 1
 
     def aur_push(self):
-        if self.build_srcinfo():
-            return 1
         if self.makepkg():
+            return 1
+        if self.build_srcinfo():
             return 1
         if self.git_commit('Update to version {}'.format(self.pkgverrel)):
             return 1
