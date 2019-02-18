@@ -548,7 +548,6 @@ def scanpkglist(pkgm):
             package.isnew |= 1
         if isnew_version(package.upstreamver, package.pkgver):
             # 2: new upstream version compared to local
-            print("NEW", package.upstreamver, package.pkgver)
             package.isnew |= 2
         if isnew_version(package.pkgverrel, package.aurverrel):
             # 4: new local version compared to AUR
