@@ -287,28 +287,22 @@ def url_md5(url):
     return hashlib.md5(r).hexdigest()
 
 
-def check_md5(pkgname, md5sum):
+def rw_config(pkgname, recname, recvalue):
     configname = "{}/{}.session".format(basedir.xdg_data_home, os.path.basename(__file__))
     ts = time.time()
     changednow = "initialized"
     if config.read(configname):
         if pkgname in config:
             changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%d%b')
-            if config[pkgname]['md5sum'] == md5sum:
+            if config[pkgname][recname] == recvalue:
                 return "unchanged ({})".format(changedlast)
             else:
                 return "changed ({})".format(changedlast)
-        else:
-            config[pkgname] = {'md5sum': str(md5sum), 'lastchecked': str(ts)}
-            with open(configname, 'w') as configfile:
-                config.write(configfile)
-            return changednow
-    else:
-        print(md5sum, ts)
-        config[pkgname] = {'md5sum': md5sum, 'lastchecked': str(ts)}
-        with open(configname, 'w') as configfile:
-            config.write(configfile)
-        return changednow
+    # no config file or no package section, write it
+    config[pkgname] = {recname: str(recvalue), 'lastchecked': str(ts)}
+    with open(configname, 'w') as configfile:
+        config.write(configfile)
+    return changednow
 
 
 def is_loose(ver):
@@ -379,16 +373,28 @@ class pkgwap:
         if watch_params:
             if type(watch_params) == list:
                 if len(watch_params) == 2:
+                    # url and regex: extract version
                     self.upstreamver = url_regex(watch_params[0], watch_params[1])
+                    if not is_canonical(self.upstreamver):
+                        self.upstreamver = rw_config(self.pkgname, 'regex', self.upstreamver)
                 elif len(watch_params) == 1:
-                    self.upstreamver = check_md5(self.pkgname, url_md5(watch_params[0]))
+                    # url: calculate md5
+                    self.upstreamver = rw_config(self.pkgname, 'md5sum', url_md5(watch_params[0]))
             else:
                 self.upstreamver = "_watch is not a list"
         else:
             self.upstreamver = self.autofindver_upstream()
 
-    def githubversion(self, url, m):
+    def githubversion(self, url):
         # search for user and repo
+        if not url:
+            return
+        if "github.com" in url:
+            m = r'github.com/([^/#.]+)/([^/#.]+)'
+        elif "github.io" in url:
+            m = r'([^/#.]+).github.io/([^/#.]+)'
+        else:
+            return
         res = re.search(m, url)
         user = res.group(1)
         repo = res.group(2)
@@ -410,18 +416,8 @@ class pkgwap:
             return
         return "r{}.{}".format(len(js), js[0]["sha"][:7])
 
-    def parseurl_version(self, url):
-        if not url:
-            return
-        if "github.com" in url:
-            ver = self.githubversion(url, r'github.com/([^/#.]+)/([^/#.]+)')
-            return ver
-        if "github.io" in url:
-            ver = self.githubversion(url, r'([^/#.]+).github.io/([^/#.]+)')
-            return ver
-
     def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
-        # Python - look in pypi based on pkgname
+        # if Python package look in pypi based on pkgname
         if self.pkgname.startswith('python-') or self.pkgname.startswith('python2-'):
             try:
                 ver = url_json("https://pypi.python.org/pypi/{}/json".format(self.pkgname.split('-', 1)[1]))["info"]["version"]
@@ -429,17 +425,18 @@ class pkgwap:
                 ver = None
             if is_canonical(ver):
                 return ver
-        # GitHub - look with GitHub API based on user and repo parsed from url
-        ver = self.parseurl_version(self.url)
+        # GitHub look with GitHub API based on user and repo parsed from url
+        ver = self.githubversion(self.url)
         if ver:
             return ver
-        ver = self.parseurl_version(self.pkgbuild._source_lookup(r"github\.(com|io)"))
+        ver = self.githubversion(self.pkgbuild._source_lookup(r"github\.(com|io)"))
         if ver:
             return ver
+        # not Python nor GitHub: md5 of url
         if self.url:
             urlmd5result = url_md5(self.url)
             if urlmd5result is not None:
-                return check_md5(self.pkgname, url_md5(self.url))
+                return rw_config(self.pkgname, 'md5sum', url_md5(self.url))
         return 0
 
     def isdiff_pkgaur(self):
@@ -460,7 +457,7 @@ class pkgwap:
             notif = Notify.Notification.new(self.pkgname, 'Status: {}'.format(self.isnew), 'dialog-information')
             notif.set_timeout(1000 * 3600 * 12)
             notif.show()
-        print('\033[{}m{:35}{:19}{:3}{:19}{:19}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
+        print('\033[{}m{:35}{:20}{:3}{:20}{:18}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
 
     def buildverrel(self):
         return "{}-{}".format(self.pkgver, self.pkgrel)
