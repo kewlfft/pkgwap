@@ -74,10 +74,10 @@ __basefile__ = os.path.basename(__file__)
 config = configparser.ConfigParser()
 
 parser = argparse.ArgumentParser(description='Scan directory for PKGBUILDs, watch for upstream updates and push.')
-parser.add_argument('-u', '--update', help='update the PKGBUILD if new upstream version is found', action="store_true")
+parser.add_argument('-u', '--update', help='update PKGBUILD if new upstream version is found', action="store_true")
 parser.add_argument('-m', '--make', help='make the package: update source checksums, create .SRCINFO and build', action="store_true")
-parser.add_argument('-p', '--push', help='push the PKGBUILD in the AUR', action="store_true")
-parser.add_argument('-f', '--force', help='force package update or push', action="store_true")
+parser.add_argument('-p', '--push', help='push PKGBUILD in the AUR', action="store_true")
+parser.add_argument('-f', '--force', help='force update even if no new upstream or push even if no new local version', action="store_true")
 parser.add_argument('-w', '--warningonly', help='only output packages with a warning message', action="store_true")
 parser.add_argument('-l', '--level', type=int, default=1, dest='level', nargs=1, help='recursion depth for the file crawler')
 parser.add_argument('-n', '--notify', help='notify if new version', action="store_true")
@@ -464,25 +464,25 @@ class pkgwap:
         return "{}-{}".format(self.pkgver, self.pkgrel)
 
     def update_pkgbuild(self):
-        op = 0
+        u = 0
         for line in fileinput.input([self.pkgbuildpath], inplace=1, backup='.bak'):
             n = line.rstrip('\n')
             if n.startswith("pkgver="):
                 n = "pkgver={}".format(self.upstreamver)
-                op += 1
+                u += 1
             elif n.startswith("pkgrel="):
                 if self.upstreamver != self.pkgver:
                     rel = 1
                 else:
                     rel = self.pkgrel + 1
                 n = "pkgrel={}".format(rel)
-                op += 1
+                u += 1
             print(n)
         self.pkgver = self.upstreamver
         self.pkgrel = rel
         self.pkgverrel = self.buildverrel()
-        print('\033[92mPKGBUILD {} fields updated\033[0m'.format(op))
-        return op != 2  # 2 operations:false:0
+        print('\033[92mPKGBUILD {} fields updated\033[0m'.format(u))
+        return u != 2  # if 2 fields updated => false = 0
 
     def update_pkgsum(self):
         process = subprocess.run(['updpkgsums'], cwd=self.pkgbuilddir)  # print stdout, print stderr
@@ -517,24 +517,6 @@ class pkgwap:
         process = subprocess.run(['git', 'push'], cwd=self.pkgbuilddir)
         return process.returncode
 
-    def pkg_update(self):
-        if self.update_pkgbuild():
-            return 1
-
-    def pkg_make(self):
-        if self.update_pkgsum():
-            return 1
-        if self.create_srcinfo():
-            return 1
-        if self.makepkg():
-            return 1
-
-    def aur_push(self):
-        if self.git_commit('Update to version {}'.format(self.pkgverrel)):
-            return 1
-        if self.git_push():
-            return 1
-
 
 def scanpkglist(pkgm):
     for pkgbuild in pkgm.pkglist:
@@ -550,15 +532,18 @@ def scanpkglist(pkgm):
             package.isnew |= 4
         if not args.warningonly or package.isnew > 0:
             package.print_line()
+        # update
         if args.update and (((package.isnew & 2) and is_canonical(package.upstreamver)) or args.force):
-            if package.pkg_update():
-                sys.exit(1)  # update error
+            if package.update_pkgbuild():
+                sys.exit(1)  # error
+        # make
         if args.make:
-            if package.pkg_make():
-                sys.exit(1)  # aur_push error
+            if package.update_pkgsum() or package.create_srcinfo() or package.makepkg():
+                sys.exit(1)  # error
+        # push
         if args.push and (isnew_version(package.pkgverrel, package.aurverrel) or args.force):
-            if package.aur_push():
-                sys.exit(1)  # aur_push error
+            if package.git_commit('Update to version {}'.format(package.pkgverrel)) or package.git_push():
+                sys.exit(1)  # error
         if package.isnew & 1:
             # fetch aur
             pass
