@@ -408,7 +408,7 @@ class pkgwap:
         if is_canonical(ver):
             return ver
         # api tag_name failed, look in releases.atom
-        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+)</title>')
+        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
         if is_canonical(ver):
             return ver
         # no release version found, use the commits field
