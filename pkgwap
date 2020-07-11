@@ -567,14 +567,19 @@ def scandir(path, level):
         print("error: directory does not exists")
         return
     pkgwap(None, None).print_line()
-    pkgm = PKGmulti()
-    # create list of pkgbuilds (pkgm.pkglist)
+    # create list of path to PKGBUILD files
+    pathlist = []
     for (root, dirs, files) in walklevel(path, level):
         if "PKGBUILD" in files:
-            try:
-                pkgm.pkglist.append(PKGBUILD(os.path.join(root, 'PKGBUILD')))
-            except (ValueError, TypeError):
-                pass
+            pathlist.append(os.path.join(root, 'PKGBUILD'))
+    pathlist.sort()
+    # create list of pkgbuilds (pkgm.pkglist)
+    pkgm = PKGmulti()
+    for p in pathlist:
+        try:
+            pkgm.pkglist.append(PKGBUILD(p))
+        except (ValueError, TypeError):
+            pass
     # query AUR RPC from all pkgbuilds version
     pkgm.getaurversions()
     scanpkglist(pkgm)
