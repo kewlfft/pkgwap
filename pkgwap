@@ -402,13 +402,13 @@ class pkgwap:
         # try with the api, version number can be found in tag_name field
         ver_github = github_api(user, repo, "releases/latest")
         try:
-            ver = re.search('[a-zA-Z_-]*(\d[\d.]*\d+)', ver_github["tag_name"]).group(1)
+            ver = re.search(r'[a-zA-Z_-]*(\d[\d.]*\d+)', ver_github["tag_name"]).group(1)
         except KeyError:
             ver = None
         if is_canonical(ver):
             return ver
         # api tag_name failed, look in releases.atom
-        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), '<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
+        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), r'<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
         if is_canonical(ver):
             return ver
         # no release version found, use the commits field
