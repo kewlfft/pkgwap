@@ -106,7 +106,7 @@ class PKGBUILD:
     _symbol_regex = re.compile(r"\$(?P<name>{[\w\d_]+}|[\w\d]+)")
 
     def __init__(self, name=None, fileobj=None):
-        super(PKGBUILD, self).__init__()
+        # super(PKGBUILD, self).__init__()
         self.install = ""
         self.checksums = {
             'md5': [],
@@ -328,8 +328,8 @@ def isnew_version(v, w):  # returns if v>w // 0: no, 1: new, 3: error
 
 class PKGmulti:
     def __init__(self):
-        # AUR: aurweb RPC interface (https://aur.archlinux.org/rpc.php)
-        self.url = "https://aur.archlinux.org/rpc.php/rpc/?v=5&type=info"
+        # AUR: aurweb RPC interface
+        self.url = "https://aur.archlinux.org/rpc/?v=5&type=info"
         self.aurverrel = {}
         self.pkglist = []
 
