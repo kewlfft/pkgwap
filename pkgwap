@@ -420,10 +420,13 @@ class pkgwap:
     def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
         # if Python package look in pypi based on pkgname
         if self.pkgname.startswith('python-') or self.pkgname.startswith('python2-'):
-            try:
-                ver = url_json("https://pypi.python.org/pypi/{}/json".format(self.pkgname.split('-', 1)[1]))["info"]["version"]
-            except (KeyError, TypeError):
-                ver = None
+            for n in [self.pkgname, self.pkgname.split('-', 1)[1]]:
+                try:
+                    ver = url_json(f"https://pypi.python.org/pypi/{n}/json")["info"]["version"]
+                except (KeyError, TypeError):
+                    ver = None
+                if ver is not None:
+                    break
             if is_canonical(ver):
                 return ver
         # GitHub look with GitHub API based on user and repo parsed from url
