@@ -248,7 +248,7 @@ class PKGBUILD:
         for symbol in self._symbols:
             if symbol.startswith('source'):
                 valuelist = self._symbols[symbol]
-                if type(valuelist) == list:
+                if isinstance(valuelist, list):
                     for value in valuelist:
                         if re.search(matchex, value):
                             return value
@@ -335,7 +335,7 @@ class PKGmulti:
 
     def getaurversions(self):
         for pb in self.pkglist:
-            self.url += "&arg[]={}".format(pb.name[0] if type(pb.name) == list else pb.name)
+            self.url += "&arg[]={}".format(pb.name[0] if isinstance(pb.name, list) else pb.name)
         rjson = url_json(self.url)
         for i in range(rjson['resultcount']):
             self.aurverrel[rjson["results"][i]["Name"]] = rjson["results"][i]["Version"]
@@ -361,7 +361,7 @@ class pkgwap:
         self.pkgrel = mypkgbuild.release
         self.pkgverrel = self.buildverrel()
 
-        self.pkgname = mypkgbuild.name[0] if type(mypkgbuild.name) == list else mypkgbuild.name
+        self.pkgname = mypkgbuild.name[0] if isinstance(mypkgbuild.name, list) else mypkgbuild.name
         try:
             self.url = mypkgbuild.url
         except AttributeError:
@@ -372,7 +372,7 @@ class pkgwap:
             self.aurverrel = ""
         watch_params = mypkgbuild._symbols.get('_watch')
         if watch_params:
-            if type(watch_params) == list:
+            if isinstance(watch_params, list):
                 if len(watch_params) == 2:
                     # url and regex: extract version
                     self.upstreamver = url_regex(watch_params[0], watch_params[1])
@@ -453,7 +453,7 @@ class pkgwap:
 
     def print_line(self):
         colordict = {'OKGREEN': 92, 'WARNING': 93, 'FAIL': 91, 'HEADER': 95, 'UNDERLINE': 4, 'OKBLUE': 94, 'ENDC': 0, 'BOLD': 1}
-        if type(self.isnew) is str:
+        if isinstance(self.isnew, str):
             state = 'HEADER'
         else:
             state = 'OKGREEN' if self.isnew == 0 else 'WARNING'
