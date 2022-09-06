@@ -114,6 +114,7 @@ class PKGBUILD:
             'sha256': [],
             'sha384': [],
             'sha512': [],
+            'b2': [],
         }
         self.noextract = []
         self.sources = []
