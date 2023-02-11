@@ -257,7 +257,7 @@ class PKGBUILD:
 
 def github_api(user, repo, req):
     token = os.environ['GITHUB_TOKEN'] if 'GITHUB_TOKEN' in os.environ else None
-    return url_json("https://api.github.com/repos/{}/{}/{}".format(user, repo, req), token)
+    return url_json(f"https://api.github.com/repos/{user}/{repo}/{req}", token)
 
 
 def url_json(url, token=None):
@@ -297,9 +297,9 @@ def rw_config(pkgname, recname, recvalue):
         if pkgname in config:
             changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%d%b%y')
             if config[pkgname][recname] == recvalue:
-                return "unchanged ({})".format(changedlast)
+                return f"unchanged ({changedlast})"
             else:
-                return "changed ({})".format(changedlast)
+                return f"changed ({changedlast})"
     # no config file or no package section, write it
     config[pkgname] = {recname: str(recvalue), 'lastchecked': str(ts)}
     with open(configname, 'w') as configfile:
@@ -315,16 +315,21 @@ def is_canonical(version):
     return re.match(r'^([1-9]\d*!)?(0|[1-9]\d*)(\.(0|[1-9]\d*))*((a|b|rc)(0|[1-9]\d*))?(\.post(0|[1-9]\d*))?(\.dev(0|[1-9]\d*))?$', str(version)) is not None
 
 
-def isnew_version(v, w):  # returns if v>w // 0: no, 1: new, 3: error
+def isnew_version(v, w):  # returns if v>w ~ 0:no 1:new 3:error
     if v == 0:
         return 0
     if not v or v.startswith('error'):
         return 3  # FAIL
-    if v.startswith('unchanged'):
+    if v.startswith('unchanged') or v == w:
         return 0
     if v.startswith('changed'):
         return 1
-    return version.parse(v) > version.parse(w)  # True:1: WARNING // False:0: OKGREEN
+    try:
+        vparsed = version.parse(v)
+        wparsed = version.parse(w)
+    except version.InvalidVersion:
+        return 3
+    return vparsed > wparsed  # True:1: WARNING // False:0: OKGREEN
 
 
 class PKGmulti:
@@ -408,8 +413,8 @@ class pkgwap:
             ver = None
         if is_canonical(ver):
             return ver
-        # api tag_name failed, look in releases.atom
-        ver = url_regex('https://github.com/{}/{}/releases.atom'.format(user, repo), r'<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
+        # try with releases.atom
+        ver = url_regex(f'https://github.com/{user}/{repo}/releases.atom', r'<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
         if is_canonical(ver):
             return ver
         # no release version found, use the commits field
@@ -445,7 +450,7 @@ class pkgwap:
         return 0
 
     def isdiff_pkgaur(self):
-        hashaur = url_md5('https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={}'.format(self.pkgname))
+        hashaur = url_md5(f'https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={self.pkgname}')
         with open(os.path.join(os.path.dirname(self.pkgbuildpath), '.SRCINFO'), "rb") as f:
             data = f.read()
         hashpkg = hashlib.md5(data).hexdigest()
@@ -459,33 +464,33 @@ class pkgwap:
         else:
             state = 'OKGREEN' if self.isnew == 0 else 'WARNING'
         if state == 'WARNING' and args.notify:
-            notif = Notify.Notification.new(self.pkgname, 'Status: {}'.format(self.isnew), 'dialog-information')
+            notif = Notify.Notification.new(self.pkgname, f'Status: {self.isnew}', 'dialog-information')
             notif.set_timeout(1000 * 3600 * 12)
             notif.show()
         print('\033[{}m{:35}{:20}{:3}{:20}{:19}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
 
     def buildverrel(self):
-        return "{}-{}".format(self.pkgver, self.pkgrel)
+        return f"{self.pkgver}-{self.pkgrel}"
 
     def update_pkgbuild(self):
         u = 0
         for line in fileinput.input([self.pkgbuildpath], inplace=1, backup='.bak'):
             n = line.rstrip('\n')
             if n.startswith("pkgver="):
-                n = "pkgver={}".format(self.upstreamver)
+                n = f"pkgver={self.upstreamver}"
                 u += 1
             elif n.startswith("pkgrel="):
                 if self.upstreamver != self.pkgver:
                     rel = 1
                 else:
                     rel = self.pkgrel + 1
-                n = "pkgrel={}".format(rel)
+                n = f"pkgrel={rel}"
                 u += 1
             print(n)
         self.pkgver = self.upstreamver
         self.pkgrel = rel
         self.pkgverrel = self.buildverrel()
-        print('\033[92mPKGBUILD {} fields updated\033[0m'.format(u))
+        print(f'\033[92mPKGBUILD {u} fields updated\033[0m')
         return u != 2  # if 2 fields updated => false = 0
 
     def update_pkgsum(self):
@@ -514,7 +519,7 @@ class pkgwap:
         return rc
 
     def git_commit(self, msg):
-        process = subprocess.run(['git', 'commit', '--all', "--message={}".format(msg)], cwd=self.pkgbuilddir)
+        process = subprocess.run(['git', 'commit', '--all', f"--message={msg}"], cwd=self.pkgbuilddir)
         return process.returncode
 
     def git_push(self):
@@ -546,7 +551,7 @@ def scanpkglist(pkgm):
                 sys.exit(1)  # error
         # push
         if args.push and (isnew_version(package.pkgverrel, package.aurverrel) or args.force):
-            if package.git_commit('Update to version {}'.format(package.pkgverrel)) or package.git_push():
+            if package.git_commit(f'Update to version {package.pkgverrel}') or package.git_push():
                 sys.exit(1)  # error
         if package.isnew & 1:
             # fetch aur
