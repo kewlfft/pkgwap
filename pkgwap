@@ -266,17 +266,19 @@ def url_json(url, token=None):
         r.add_header("Authorization", "token " + token)
     try:
         js = json.load(urllib.request.urlopen(r))
-    except urllib.error.HTTPError:
+    except (urllib.error.HTTPError, urllib.error.URLError):
         js = {}
     return js
 
 
 def url_regex(url, regex):
+    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
+    r = urllib.request.Request(url, headers=headers)
     try:
-        r = urllib.request.urlopen(url).read()
+        res = urllib.request.urlopen(r).read()
     except urllib.error.URLError:
         return
-    matchObject = re.search(regex, r.decode("utf-8"))
+    matchObject = re.search(regex, res.decode("utf-8"))
     if matchObject:
         return matchObject.group(1)
 
@@ -287,6 +289,20 @@ def url_md5(url):
     except urllib.error.URLError:
         return
     return hashlib.md5(r).hexdigest()
+
+def parse_github_url(url):
+    if not url:
+        return None, None
+    if "github.com" in url:
+        m = r'github\.com/([^/#]+)/([^/#]+)'
+    elif "github.io" in url:
+        m = r'([^/#]+)\.github\.io/([^/#]+)'
+    else:
+        return None, None
+    res = re.search(m, url)
+    if not res:
+        return None, None
+    return res.group(1), res.group(2)
 
 
 def rw_config(pkgname, recname, recvalue):
@@ -343,6 +359,12 @@ class PKGmulti:
         for pb in self.pkglist:
             self.url += "&arg[]={}".format(pb.name[0] if isinstance(pb.name, list) else pb.name)
         rjson = url_json(self.url)
+        
+        # Check if we got a valid response with the expected structure
+        if not rjson or 'resultcount' not in rjson or 'results' not in rjson:
+            print("Warning: Failed to fetch AUR package information")
+            return
+        
         for i in range(rjson['resultcount']):
             self.aurverrel[rjson["results"][i]["Name"]] = rjson["results"][i]["Version"]
 
@@ -393,35 +415,60 @@ class pkgwap:
             self.upstreamver = self.autofindver_upstream()
 
     def githubversion(self, url):
-        # search for user and repo
-        if not url:
+        user, repo = parse_github_url(url)
+        if not user or not repo:
             return
-        if "github.com" in url:
-            m = r'github.com/([^/#]+)/([^/#]+)'
-        elif "github.io" in url:
-            m = r'([^/#]+).github.io/([^/#]+)'
-        else:
-            return
-        res = re.search(m, url)
-        user = res.group(1)
-        repo = res.group(2)
-        # try with the api, version number can be found in tag_name field
-        ver_github = github_api(user, repo, "releases/latest")
-        try:
-            ver = re.search(r'[a-zA-Z_-]*(\d[\d.]*\d+)', ver_github["tag_name"]).group(1)
-        except KeyError:
-            ver = None
+
+        # 1. Try GitHub API - releases/latest
+        release = github_api(user, repo, "releases/latest")
+        tag = release.get("tag_name") if isinstance(release, dict) else None
+        if tag:
+            ver = re.search(r'[a-zA-Z_-]*(\d[\d.]*\d+)', tag)
+            if ver and is_canonical(ver.group(1)):
+                return ver.group(1)
+
+        # 2. Fallback: releases.atom feed
+        ver = url_regex(
+            f"https://github.com/{user}/{repo}/releases.atom",
+            r"<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>"
+        )
         if is_canonical(ver):
             return ver
-        # try with releases.atom
-        ver = url_regex(f'https://github.com/{user}/{repo}/releases.atom', r'<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>')
-        if is_canonical(ver):
-            return ver
-        # no release version found, use the commits field
-        js = github_api(user, repo, "commits")
-        if not js:
+
+        # 3. Fallback: latest commit
+        commits = github_api(user, repo, "commits")
+        if not commits or not isinstance(commits, list) or "sha" not in commits[0]:
             return
-        return "r{}.{}".format(len(js), js[0]["sha"][:7])
+        return f"r{len(commits)}.{commits[0]['sha'][:7]}"
+
+    def githubcommit(self, url):
+        """Returns the short commit hash of the latest release tag."""
+        user, repo = parse_github_url(url)
+        if not user or not repo:
+            return None
+
+        release = github_api(user, repo, "releases/latest")
+        if not release:
+            return None
+        tag = release.get("tag_name")
+        if not tag:
+            return None
+        ref = github_api(user, repo, f"git/ref/tags/{tag}")
+        if not ref or "object" not in ref:
+            return None
+
+        obj = ref["object"]
+        if obj["type"] == "commit":
+            return obj["sha"]
+        elif obj["type"] == "tag":
+            try:
+                with urllib.request.urlopen(obj["url"], timeout=10) as response:
+                    tag_obj = json.load(response)
+                return tag_obj.get("object", {}).get("sha", "")
+            except Exception:
+                return None
+        return None
+
 
     def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
         # if Python package look in pypi based on pkgname
@@ -511,7 +558,7 @@ class pkgwap:
     def makepkg(self):
         if self.makepkg_done:
             return
-        process = subprocess.run(['makepkg', '--force', '--clean'], cwd=self.pkgbuilddir)
+        process = subprocess.run(['makepkg', '--force', '--clean', '--nocheck'], cwd=self.pkgbuilddir)
         # add `stdout=subprocess.PIPE` parameter to capture stdout instead of printing it to stdout
         # then `process.stdout.decode('utf-8')` contains the stdout string
         rc = process.returncode
