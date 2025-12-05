@@ -51,11 +51,8 @@ import os
 import re
 import argparse
 import hashlib
-import configparser
-import xdg.BaseDirectory as basedir  # xdg basedir where to store checksums, ~/.local/share/pkgwap.session
 import time
 # import AUR.RPC as AUR # python3-aur
-from datetime import datetime
 import urllib.request
 import urllib.error
 import shlex
@@ -64,6 +61,7 @@ import subprocess
 import json
 import sys
 from packaging import version
+from difflib import unified_diff
 import gi
 gi.require_version('Notify', '0.7')
 from gi.repository import Notify
@@ -71,7 +69,7 @@ from gi.repository import Notify
 
 __version__ = "0.2.4"
 __basefile__ = os.path.basename(__file__)
-config = configparser.ConfigParser()
+HTTP_TIMEOUT = 30  # Timeout in seconds for all HTTP requests
 
 parser = argparse.ArgumentParser(description='Scan directory for PKGBUILDs, watch for upstream updates and push.')
 parser.add_argument('-u', '--update', help='update PKGBUILD if new upstream version is found', action="store_true")
@@ -79,9 +77,10 @@ parser.add_argument('-m', '--make', help='make the package: update source checks
 parser.add_argument('-p', '--push', help='push PKGBUILD in the AUR', action="store_true")
 parser.add_argument('-f', '--force', help='force update even if no new upstream or push even if no new local version', action="store_true")
 parser.add_argument('-w', '--warningonly', help='only output packages with a warning message', action="store_true")
-parser.add_argument('-l', '--level', type=int, default=1, dest='level', nargs=1, help='recursion depth for the file crawler')
+parser.add_argument('-l', '--level', type=int, default=1, dest='level', help='recursion depth for the file crawler')
 parser.add_argument('-n', '--notify', help='notify if new version', action="store_true")
-parser.add_argument('-v', '--version', help='print version of {}'.format(__basefile__), action='version', version='%(prog)s {}'.format(__version__))
+parser.add_argument('-d', '--diff', help='show detailed differences when status 1 is set but versions match', action="store_true")
+parser.add_argument('-v', '--version', help=f'print version of {__basefile__}', action='version', version=f'%(prog)s {__version__}')
 parser.add_argument('DIR', default='.', nargs='?', help='directory or file containing PKGBUILD(s)')
 args = parser.parse_args()
 if args.force:
@@ -164,7 +163,7 @@ class PKGBUILD:
         parser = shlex.shlex(fileobj, posix=True)
         parser.whitespace_split = True
         in_function = False
-        while 1:
+        while True:
             token = parser.get_token()
             if token is None or token == '':
                 break
@@ -183,12 +182,12 @@ class PKGBUILD:
                         continue
                     if _token[-1] == ')':
                         # _token = '"%s")' % _token.strip(')')
-                        _token = '"{}")'.format(_token[:-1])
+                        _token = f'"{_token[:-1]}")'
                         token = token.replace('=(', '=("', 1) + '"'
                         token = " ".join((token, " ".join(elements), _token))
                         in_array = False
                     else:
-                        elements.append('"%s"' % _token.strip())
+                        elements.append(f'"{_token.strip()}"')
             # Assignment
             if re.match(r"^[\w\d_]+=", token):
                 self._handle_assign(token)
@@ -208,24 +207,20 @@ class PKGBUILD:
 
     def _clean_array(self, value):
         """Pythonize a bash array"""
-        return shlex.split(value.strip('()'))
+        return shlex.split(value.removeprefix('(').removesuffix(')'))
 
     def _replace_symbol(self, matchobj):
         """Replace a regex-matched variable with its value"""
-        symbol = matchobj.group('name').strip("{}")
+        symbol = matchobj.group('name').removeprefix('{').removesuffix('}')
         # If the symbol isn't found fallback to an empty string, like bash
-        try:
-            value = self._symbols[symbol]
-        except KeyError:
-            value = ''
+        value = self._symbols.get(symbol, '')
         # substitute the symbol with the value
         # BUG: Might result in an infinite loop, oops!
         return self._symbol_regex.sub(self._replace_symbol, value)
 
     def _substitute(self):
         """Substitute all bash variables within values with their values"""
-        for symbol in self._symbols:
-            value = self._symbols[symbol]
+        for symbol, value in self._symbols.items():
             # FIXME: This is icky
             if isinstance(value, str):
                 result = self._symbol_regex.sub(self._replace_symbol, value)
@@ -235,28 +230,24 @@ class PKGBUILD:
 
     def _assign_local(self):
         """Assign values from _symbols to PKGBUILD variables"""
-        for var in self._symbols:
-            value = self._symbols[var]
+        for var, value in self._symbols.items():
             if var in self._checksum_fields:
-                key = var.replace('sums', '')
+                key = var.removesuffix('sums')
                 self.checksums[key] = value
             else:
-                if var in self._var_map:
-                    var = self._var_map[var]
+                var = self._var_map.get(var, var)
                 setattr(self, var, value)
 
     def _source_lookup(self, matchex):
-        for symbol in self._symbols:
-            if symbol.startswith('source'):
-                valuelist = self._symbols[symbol]
-                if isinstance(valuelist, list):
-                    for value in valuelist:
-                        if re.search(matchex, value):
-                            return value
+        for symbol, valuelist in self._symbols.items():
+            if symbol.startswith('source') and isinstance(valuelist, list):
+                for value in valuelist:
+                    if re.search(matchex, value):
+                        return value
 
 
 def github_api(user, repo, req):
-    token = os.environ['GITHUB_TOKEN'] if 'GITHUB_TOKEN' in os.environ else None
+    token = os.environ.get('GITHUB_TOKEN')
     return url_json(f"https://api.github.com/repos/{user}/{repo}/{req}", token)
 
 
@@ -265,7 +256,7 @@ def url_json(url, token=None):
     if token:
         r.add_header("Authorization", "token " + token)
     try:
-        js = json.load(urllib.request.urlopen(r))
+        js = json.load(urllib.request.urlopen(r, timeout=HTTP_TIMEOUT))
     except (urllib.error.HTTPError, urllib.error.URLError):
         js = {}
     return js
@@ -273,54 +264,122 @@ def url_json(url, token=None):
 
 def url_regex(url, regex):
     headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
-    r = urllib.request.Request(url, headers=headers)
     try:
-        res = urllib.request.urlopen(r).read()
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as response:
+            content = response.read().decode("utf-8")
     except urllib.error.URLError:
-        return
-    matchObject = re.search(regex, res.decode("utf-8"))
-    if matchObject:
-        return matchObject.group(1)
+        return None
+    if match := re.search(regex, content):
+        return match.group(1)
+    return None
 
 
 def url_md5(url):
     try:
-        r = urllib.request.urlopen(url).read()
+        data = urllib.request.urlopen(url, timeout=HTTP_TIMEOUT).read()
+        return hashlib.md5(data).hexdigest()
     except urllib.error.URLError:
         return
-    return hashlib.md5(r).hexdigest()
+
+
+def url_get_headers(url):
+    """Get HTTP response headers as a string, including redirect headers"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36'}
+    try:
+        # Create a custom opener that doesn't follow redirects automatically
+        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                # Don't follow redirects, just return None to stop
+                return None
+        
+        opener = urllib.request.build_opener(NoRedirectHandler)
+        req = urllib.request.Request(url, headers=headers)
+        # Use HEAD request to avoid downloading body when we only need headers
+        req.get_method = lambda: 'HEAD'
+        try:
+            response = opener.open(req, timeout=HTTP_TIMEOUT)
+            # Combine all headers into a single string for regex matching
+            header_str = '\n'.join(f"{k}: {v}" for k, v in response.headers.items())
+            response.close()
+            return header_str
+        except urllib.error.HTTPError as e:
+            # For redirects (3xx), the headers are in the exception
+            header_str = '\n'.join(f"{k}: {v}" for k, v in e.headers.items())
+            return header_str
+    except urllib.error.URLError:
+        return None
+
+
+def url_regex_header(url, regex):
+    """Extract version from HTTP response headers using regex"""
+    if header_str := url_get_headers(url):
+        if match := re.search(regex, header_str, re.IGNORECASE):
+            return match.group(1)
+    return None
+
 
 def parse_github_url(url):
     if not url:
         return None, None
     if "github.com" in url:
-        m = r'github\.com/([^/#]+)/([^/#]+)'
+        pattern = r'github\.com/([^/#]+)/([^/#]+)'
     elif "github.io" in url:
-        m = r'([^/#]+)\.github\.io/([^/#]+)'
+        pattern = r'([^/#]+)\.github\.io/([^/#]+)'
     else:
         return None, None
-    res = re.search(m, url)
-    if not res:
-        return None, None
-    return res.group(1), res.group(2)
+    if res := re.search(pattern, url):
+        return res.group(1), res.group(2)
+    return None, None
 
 
-def rw_config(pkgname, recname, recvalue):
-    configname = "{}/{}.session".format(basedir.xdg_data_home, os.path.basename(__file__))
-    ts = time.time()
-    changednow = "initialized"
-    if config.read(configname):
-        if pkgname in config:
-            changedlast = datetime.fromtimestamp(float(config[pkgname]['lastchecked'])).strftime('%d%b%y')
-            if config[pkgname][recname] == recvalue:
-                return f"unchanged ({changedlast})"
+def read_pkgbuild_field(pkgbuildpath, fieldname):
+    """Read a field value from PKGBUILD file"""
+    try:
+        with open(pkgbuildpath, 'r') as f:
+            for line in f:
+                if line.strip().startswith(f"{fieldname}="):
+                    # Extract value, handling both quoted and unquoted
+                    value = line.split('=', 1)[1].strip()
+                    # Remove quotes if present
+                    if (value.startswith('"') and value.endswith('"')) or \
+                       (value.startswith("'") and value.endswith("'")):
+                        value = value[1:-1]
+                    return value
+    except Exception:
+        return None
+    return None
+
+
+def write_pkgbuild_field(pkgbuildpath, fieldname, fieldvalue):
+    """Write or update a field in PKGBUILD file"""
+    field_line = f'{fieldname}="{fieldvalue}"'
+    # First check if field exists
+    with open(pkgbuildpath, 'r') as f:
+        field_exists = any(
+            line.strip().startswith(f"{fieldname}=")
+            for line in f
+        )
+    
+    if field_exists:
+        # Update existing field
+        for line in fileinput.input([pkgbuildpath], inplace=1, backup='.bak'):
+            if line.strip().startswith(f"{fieldname}="):
+                print(field_line)
             else:
-                return f"changed ({changedlast})"
-    # no config file or no package section, write it
-    config[pkgname] = {recname: str(recvalue), 'lastchecked': str(ts)}
-    with open(configname, 'w') as configfile:
-        config.write(configfile)
-    return changednow
+                print(line, end='')
+    else:
+        # Field doesn't exist, insert it after _watch if it exists
+        with open(pkgbuildpath, 'r') as f:
+            lines = f.readlines()
+        insert_pos = len(lines)
+        for i, line in enumerate(lines):
+            if line.strip().startswith('_watch='):
+                insert_pos = i + 1
+                break
+        lines.insert(insert_pos, f'{field_line}\n')
+        with open(pkgbuildpath, 'w') as f:
+            f.writelines(lines)
 
 
 def is_loose(ver):
@@ -343,9 +402,9 @@ def isnew_version(v, w):  # returns if v>w ~ 0:no 1:new 3:error
     try:
         vparsed = version.parse(v)
         wparsed = version.parse(w)
+        return int(vparsed > wparsed)  # True:1: WARNING // False:0: OKGREEN
     except version.InvalidVersion:
         return 3
-    return vparsed > wparsed  # True:1: WARNING // False:0: OKGREEN
 
 
 class PKGmulti:
@@ -357,7 +416,10 @@ class PKGmulti:
 
     def getaurversions(self):
         for pb in self.pkglist:
-            self.url += "&arg[]={}".format(pb.name[0] if isinstance(pb.name, list) else pb.name)
+            pkg_name = pb.name[0] if isinstance(pb.name, list) else pb.name
+            self.url += f"&arg[]={pkg_name}"
+        
+        print(f"Querying AUR for {len(self.pkglist)} package(s)...")
         rjson = url_json(self.url)
         
         # Check if we got a valid response with the expected structure
@@ -365,8 +427,9 @@ class PKGmulti:
             print("Warning: Failed to fetch AUR package information")
             return
         
-        for i in range(rjson['resultcount']):
-            self.aurverrel[rjson["results"][i]["Name"]] = rjson["results"][i]["Version"]
+        print(f"Found {rjson['resultcount']} package(s) in AUR")
+        for result in rjson["results"]:
+            self.aurverrel[result["Name"]] = result["Version"]
 
 
 class pkgwap:
@@ -382,6 +445,9 @@ class pkgwap:
         self.isnew = 0
         self.makepkg_done = False
         self.srcinfo_done = False
+        self._aur_srcinfo_content = None  # Cache for AUR .SRCINFO content (text)
+        self._aur_srcinfo_bytes = None  # Cache for AUR .SRCINFO raw bytes (for MD5)
+        self._is_aur_remote = None  # Cache for AUR remote check
         self.pkgbuild = mypkgbuild
         self.pkgbuildpath = mypkgbuild.path
         self.pkgbuilddir = mypkgbuild.dir
@@ -398,21 +464,99 @@ class pkgwap:
             self.aurverrel = pkgm.aurverrel[self.pkgname]
         except KeyError:
             self.aurverrel = ""
-        watch_params = mypkgbuild._symbols.get('_watch')
-        if watch_params:
-            if isinstance(watch_params, list):
-                if len(watch_params) == 2:
-                    # url and regex: extract version
-                    self.upstreamver = url_regex(watch_params[0], watch_params[1])
-                    if not is_canonical(self.upstreamver):
-                        self.upstreamver = rw_config(self.pkgname, 'regex', self.upstreamver)
-                elif len(watch_params) == 1:
-                    # url: calculate md5
-                    self.upstreamver = rw_config(self.pkgname, 'md5sum', url_md5(watch_params[0]))
-            else:
-                self.upstreamver = "_watch is not a list"
-        else:
+        self.commit = None  # Initialize full commit hash
+        self.upstreamver = None  # Will be set by _watch (if target_field="pkgver") or autofind
+        
+        # Process _watch to write to PKGBUILD fields (pkgver is special case that also populates upstreamver)
+        if watch_params := mypkgbuild._symbols.get('_watch'):
+            # Filter out empty strings before validation and parsing
+            watch_params = [p for p in watch_params if p] if isinstance(watch_params, list) else watch_params
+            if not self._validate_watch_params(watch_params, 5, '_watch'):
+                for config in self._parse_watch_configs(watch_params):
+                    self._process_watch_config(config)
+        
+        # Fall back to autofind if no result
+        if self.upstreamver is None:
             self.upstreamver = self.autofindver_upstream()
+        
+        # Load commit information alongside version (regardless of watch method)
+        self.commit = self.autofindcommit_upstream()
+
+    def _validate_watch_params(self, params, count, name):
+        """Validate watch parameters. Returns error string or None if valid."""
+        if not isinstance(params, list):
+            return f"{name} requires exactly {count} parameters per configuration"
+        # Filter out empty strings that may be introduced by multi-line array parsing
+        filtered_params = [p for p in params if p]
+        if len(filtered_params) < count:
+            return f"{name} requires exactly {count} parameters per configuration"
+        if len(filtered_params) % count != 0:
+            return f"{name} array length must be a multiple of {count} (got {len(filtered_params)} parameters)"
+        return None
+
+    def _parse_watch_configs(self, watch_params):
+        """
+        Parse _watch array into list of watch configurations.
+        Each watch config requires exactly 5 parameters: url, data_source, action, pattern, target_field
+        
+        Returns list of dicts with keys: url, data_source, action, pattern, target_field
+        """
+        # Filter out empty strings that may be introduced by multi-line array parsing
+        filtered_params = [p for p in watch_params if p]
+        return [{
+            'url': filtered_params[i],
+            'data_source': filtered_params[i + 1].lower(),
+            'action': filtered_params[i + 2].lower(),
+            'pattern': filtered_params[i + 3],
+            'target_field': filtered_params[i + 4]
+        } for i in range(0, len(filtered_params), 5)]
+
+    def _process_watch_config(self, config):
+        """
+        Process a single watch configuration and save result to target field.
+        Special case: if target_field="pkgver", also populates upstreamver for comparison.
+        
+        Args:
+            config: dict with keys: url, data_source, action, pattern, target_field
+        
+        Returns:
+            Extracted value (str), 0 if not found, or error message (str)
+        """
+        url, data_source, action, pattern, target_field = config['url'], config['data_source'], config['action'], config['pattern'], config['target_field']
+        
+        match action:
+            case "regex":
+                if not pattern:
+                    return f"_watch regex action requires pattern parameter"
+                extract_func = url_regex_header if data_source == "header" else url_regex
+                if not (extracted_value := extract_func(url, pattern)):
+                    return 0
+                
+                # Special handling for pkgver: populate upstreamver for comparison (don't write to file during scan)
+                if target_field == "pkgver":
+                    # Store extracted value in upstreamver for comparison/display
+                    # Actual writing to pkgver happens in update_pkgbuild() when --update is used
+                    if self.upstreamver is None:
+                        self.upstreamver = extracted_value
+                    return extracted_value
+                
+                # Check if it's a canonical version
+                if is_canonical(extracted_value):
+                    # Canonical version: save to target field and return it
+                    write_pkgbuild_field(self.pkgbuildpath, target_field, extracted_value)
+                    return extracted_value
+                else:
+                    # Non-canonical value: store in PKGBUILD and track changes
+                    stored_value = read_pkgbuild_field(self.pkgbuildpath, target_field)
+                    if stored_value == extracted_value:
+                        return f"unchanged ({extracted_value[:4] if len(extracted_value) > 16 else extracted_value})"
+                    write_pkgbuild_field(self.pkgbuildpath, target_field, extracted_value)
+                    trunc_len = 4 if stored_value else 8
+                    trunc = extracted_value[:trunc_len] if len(extracted_value) > trunc_len else extracted_value
+                    status = "changed" if stored_value else "initialized"
+                    return f"{status} ({trunc}...)"
+            case _:
+                return f"_watch action must be 'regex', got '{action}'"
 
     def githubversion(self, url):
         user, repo = parse_github_url(url)
@@ -421,117 +565,234 @@ class pkgwap:
 
         # 1. Try GitHub API - releases/latest
         release = github_api(user, repo, "releases/latest")
-        tag = release.get("tag_name") if isinstance(release, dict) else None
-        if tag:
-            ver = re.search(r'[a-zA-Z_-]*(\d[\d.]*\d+)', tag)
-            if ver and is_canonical(ver.group(1)):
-                return ver.group(1)
+        if isinstance(release, dict) and (tag := release.get("tag_name")):
+            if ver := re.search(r'[a-zA-Z_-]*(\d[\d.]*\d+)', tag):
+                if is_canonical(ver.group(1)):
+                    return ver.group(1)
 
         # 2. Fallback: releases.atom feed
-        ver = url_regex(
+        if ver := url_regex(
             f"https://github.com/{user}/{repo}/releases.atom",
             r"<title>[a-zA-Z_-]*(\d[\d.]*\d+).*</title>"
-        )
-        if is_canonical(ver):
-            return ver
+        ):
+            if is_canonical(ver):
+                return ver
 
         # 3. Fallback: latest commit
         commits = github_api(user, repo, "commits")
-        if not commits or not isinstance(commits, list) or "sha" not in commits[0]:
-            return
-        return f"r{len(commits)}.{commits[0]['sha'][:7]}"
+        if isinstance(commits, list) and commits and "sha" in commits[0]:
+            return f"r{len(commits)}.{commits[0]['sha'][:7]}"
+        return None
 
     def githubcommit(self, url):
-        """Returns the short commit hash of the latest release tag."""
+        """Returns the commit hash of the latest release tag."""
         user, repo = parse_github_url(url)
         if not user or not repo:
             return None
 
         release = github_api(user, repo, "releases/latest")
-        if not release:
+        if not release or not (tag := release.get("tag_name")):
             return None
-        tag = release.get("tag_name")
-        if not tag:
-            return None
+        
         ref = github_api(user, repo, f"git/ref/tags/{tag}")
         if not ref or "object" not in ref:
             return None
 
         obj = ref["object"]
-        if obj["type"] == "commit":
-            return obj["sha"]
-        elif obj["type"] == "tag":
-            try:
-                with urllib.request.urlopen(obj["url"], timeout=10) as response:
-                    tag_obj = json.load(response)
-                return tag_obj.get("object", {}).get("sha", "")
-            except Exception:
-                return None
+        match obj.get("type"):
+            case "commit":
+                return obj["sha"]
+            case "tag":
+                try:
+                    with urllib.request.urlopen(obj["url"], timeout=HTTP_TIMEOUT) as response:
+                        tag_obj = json.load(response)
+                    return tag_obj.get("object", {}).get("sha", "")
+                except Exception:
+                    return None
         return None
 
 
     def autofindver_upstream(self):  # returns message to be displayed in column 'Upstream' (version number or other)
         # if Python package look in pypi based on pkgname
-        if self.pkgname.startswith('python-') or self.pkgname.startswith('python2-'):
+        if self.pkgname.startswith('python-'):
             for n in [self.pkgname, self.pkgname.split('-', 1)[1]]:
                 try:
                     ver = url_json(f"https://pypi.python.org/pypi/{n}/json")["info"]["version"]
                 except (KeyError, TypeError):
                     ver = None
-                if ver is not None:
-                    break
-            if is_canonical(ver):
-                return ver
+                if ver and is_canonical(ver):
+                    return ver
         # GitHub look with GitHub API based on user and repo parsed from url
-        ver = self.githubversion(self.url)
-        if ver:
+        if ver := self.githubversion(self.url):
             return ver
-        ver = self.githubversion(self.pkgbuild._source_lookup(r"github\.(com|io)"))
-        if ver:
+        if ver := self.githubversion(self.pkgbuild._source_lookup(r"github\.(com|io)")):
             return ver
         # not Python nor GitHub: md5 of url
-        if self.url:
-            urlmd5result = url_md5(self.url)
-            if urlmd5result is not None:
-                return rw_config(self.pkgname, 'md5sum', url_md5(self.url))
         return 0
 
+    def autofindcommit_upstream(self):
+        """Find the full commit hash for GitHub repositories"""
+        # GitHub look with GitHub API based on user and repo parsed from url
+        if self.url and 'github.com' in self.url:
+            return self.githubcommit(self.url)
+        
+        # Check sources array for GitHub URLs
+        github_url = self.pkgbuild._source_lookup(r"github\.(com|io)")
+        if github_url:
+            return self.githubcommit(github_url)
+        
+        return None
+
+    def _fetch_aur_srcinfo_content(self):
+        """Fetch the .SRCINFO content from AUR (git or web), caching the result"""
+        if self._aur_srcinfo_content is not None:
+            return self._aur_srcinfo_content
+        
+        # Try to get .SRCINFO from git remote first (more accurate, avoids web cache issues)
+        git_dir = os.path.join(self.pkgbuilddir, '.git')
+        if os.path.exists(git_dir):
+            try:
+                # Check if remote is AUR (cached check)
+                if self._is_aur_remote is None:
+                    process = subprocess.run(['git', 'remote', 'get-url', 'origin'], 
+                                           cwd=self.pkgbuilddir, capture_output=True, text=True, timeout=5)
+                    self._is_aur_remote = process.returncode == 0 and 'aur.archlinux.org' in process.stdout
+                
+                if self._is_aur_remote:
+                    # Check if origin/master exists locally before fetching
+                    process = subprocess.run(['git', 'rev-parse', '--verify', 'origin/master'], 
+                                           cwd=self.pkgbuilddir, capture_output=True, timeout=5)
+                    if process.returncode != 0:
+                        # Only fetch if origin/master doesn't exist locally
+                        subprocess.run(['git', 'fetch', 'origin'], 
+                                     cwd=self.pkgbuilddir, capture_output=True, timeout=10)
+                    
+                    # Get .SRCINFO from remote (as text for content, encode for bytes)
+                    process = subprocess.run(['git', 'show', 'origin/master:.SRCINFO'], 
+                                           cwd=self.pkgbuilddir, capture_output=True, text=True, timeout=5)
+                    if process.returncode == 0:
+                        self._aur_srcinfo_content = process.stdout
+                        self._aur_srcinfo_bytes = process.stdout.encode('utf-8')
+                        return self._aur_srcinfo_content
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                pass
+        
+        # Fall back to web interface if git method didn't work
+        try:
+            url = f'https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={self.pkgname}'
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as response:
+                # Store raw bytes first (matching original url_md5 behavior)
+                raw_bytes = response.read()
+                self._aur_srcinfo_bytes = raw_bytes
+                # Decode for text content
+                self._aur_srcinfo_content = raw_bytes.decode('utf-8')
+                return self._aur_srcinfo_content
+        except Exception:
+            self._aur_srcinfo_content = None
+            self._aur_srcinfo_bytes = None
+            return None
+
     def isdiff_pkgaur(self):
-        hashaur = url_md5(f'https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={self.pkgname}')
+        # Fetch AUR .SRCINFO (cached after first fetch)
+        self._fetch_aur_srcinfo_content()
+        
+        # Compute MD5 using cached bytes (matching original behavior)
+        if self._aur_srcinfo_bytes is not None:
+            hashaur = hashlib.md5(self._aur_srcinfo_bytes).hexdigest()
+        else:
+            # Fallback: try to get hash directly from web if content fetch failed
+            hashaur = url_md5(f'https://aur.archlinux.org/cgit/aur.git/plain/.SRCINFO?h={self.pkgname}')
+        
         with open(os.path.join(os.path.dirname(self.pkgbuildpath), '.SRCINFO'), "rb") as f:
             data = f.read()
         hashpkg = hashlib.md5(data).hexdigest()
         self.pkgaursame = '=' if hashaur == hashpkg else '!='
         return hashaur != hashpkg  # same:false=0, diff:true=1
 
+    def get_aur_srcinfo(self):
+        """Fetch the .SRCINFO content from AUR"""
+        return self._fetch_aur_srcinfo_content()
+
+    def get_local_srcinfo(self):
+        """Get the local .SRCINFO content"""
+        srcinfo_path = os.path.join(os.path.dirname(self.pkgbuildpath), '.SRCINFO')
+        try:
+            with open(srcinfo_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception:
+            return None
+
+    def show_srcinfo_diff(self):
+        """Show differences between local and AUR .SRCINFO files"""
+        local_content = self.get_local_srcinfo()
+        aur_content = self.get_aur_srcinfo()
+        
+        if local_content is None:
+            print(f"  Error: Could not read local .SRCINFO for {self.pkgname}")
+            return
+        if aur_content is None:
+            print(f"  Error: Could not fetch AUR .SRCINFO for {self.pkgname}")
+            return
+        
+        local_lines = local_content.splitlines()
+        aur_lines = aur_content.splitlines()
+        
+        # Normalize lines by stripping trailing whitespace for comparison
+        local_normalized = [line.rstrip() for line in local_lines]
+        aur_normalized = [line.rstrip() for line in aur_lines]
+        
+        # Find differences
+        diff = list(unified_diff(aur_normalized, local_normalized, 
+                                fromfile=f'AUR/{self.pkgname}/.SRCINFO',
+                                tofile=f'Local/{self.pkgname}/.SRCINFO',
+                                lineterm=''))
+        
+        if diff:
+            print(f"\n  Differences in .SRCINFO for {self.pkgname}:")
+            for line in diff[:50]:  # Limit to first 50 lines
+                if line.startswith('---') or line.startswith('+++'):
+                    print(f"  {line}")
+                elif line.startswith('@@'):
+                    print(f"  {line}")
+                elif line.startswith('-'):
+                    print(f"  \033[91m{line}\033[0m")  # Red for removed
+                elif line.startswith('+'):
+                    print(f"  \033[92m{line}\033[0m")  # Green for added
+                else:
+                    print(f"  {line}")
+            if len(diff) > 50:
+                print(f"  ... (showing first 50 of {len(diff)} diff lines)")
+        else:
+            print(f"  No differences found (after whitespace normalization)")
+
     def print_line(self):
         colordict = {'OKGREEN': 92, 'WARNING': 93, 'FAIL': 91, 'HEADER': 95, 'UNDERLINE': 4, 'OKBLUE': 94, 'ENDC': 0, 'BOLD': 1}
-        if isinstance(self.isnew, str):
-            state = 'HEADER'
-        else:
-            state = 'OKGREEN' if self.isnew == 0 else 'WARNING'
+        state = 'HEADER' if isinstance(self.isnew, str) else ('OKGREEN' if self.isnew == 0 else 'WARNING')
         if state == 'WARNING' and args.notify:
             notif = Notify.Notification.new(self.pkgname, f'Status: {self.isnew}', 'dialog-information')
             notif.set_timeout(1000 * 3600 * 12)
             notif.show()
-        print('\033[{}m{:35}{:20}{:3}{:20}{:19}{:6}\033[0m'.format(colordict.get(state), self.pkgname, self.pkgverrel, self.pkgaursame, self.aurverrel, self.upstreamver, self.isnew))
+        print(f'\033[{colordict.get(state)}m{self.pkgname:35}{self.pkgverrel:20}{self.pkgaursame:3}{self.aurverrel:20}{self.upstreamver:19}{self.isnew:6}\033[0m')
 
     def buildverrel(self):
         return f"{self.pkgver}-{self.pkgrel}"
 
     def update_pkgbuild(self):
         u = 0
+        rel = self.pkgrel  # Initialize rel in case pkgrel= line is not found
         for line in fileinput.input([self.pkgbuildpath], inplace=1, backup='.bak'):
             n = line.rstrip('\n')
             if n.startswith("pkgver="):
                 n = f"pkgver={self.upstreamver}"
                 u += 1
             elif n.startswith("pkgrel="):
-                if self.upstreamver != self.pkgver:
-                    rel = 1
-                else:
-                    rel = self.pkgrel + 1
+                rel = 1 if self.upstreamver != self.pkgver else self.pkgrel + 1
                 n = f"pkgrel={rel}"
+                u += 1
+            elif n.startswith("_commit=") and self.commit:
+                # Update _commit= lines with short commit hash (first 8 characters)
+                n = f"_commit={self.commit[:8]}"
                 u += 1
             print(n)
         self.pkgver = self.upstreamver
@@ -569,6 +830,50 @@ class pkgwap:
         process = subprocess.run(['git', 'commit', '--all', f"--message={msg}"], cwd=self.pkgbuilddir)
         return process.returncode
 
+    def validate_before_push(self):
+        """Validate package before pushing to AUR"""
+        # Check if .SRCINFO exists and is current
+        srcinfo_path = os.path.join(self.pkgbuilddir, '.SRCINFO')
+        if not os.path.exists(srcinfo_path):
+            print(f"Error: .SRCINFO missing for {self.pkgname}")
+            return False
+        
+        return True
+
+    def git_push_with_validation(self):
+        """Push with validation"""
+        # Check for uncommitted changes and commit them if found
+        process = subprocess.run(['git', 'status', '--porcelain'], cwd=self.pkgbuilddir, capture_output=True, text=True)
+        if process.stdout.strip():
+            print(f"Uncommitted changes detected for {self.pkgname}, committing them...")
+            # Determine the type of update for better commit message
+            if self.upstreamver and self.upstreamver != self.pkgver:
+                commit_msg = f'{self.pkgname}: update to {self.pkgverrel}'
+            else:
+                commit_msg = f'{self.pkgname}: bump pkgrel to {self.pkgverrel}'
+            
+            if self.git_commit(commit_msg):
+                print(f"Failed to commit changes for {self.pkgname}")
+                return 1
+        
+        if not self.validate_before_push():
+            return 1
+        
+        # Run namcap validation if available
+        try:
+            process = subprocess.run(['namcap', 'PKGBUILD'], cwd=self.pkgbuilddir, 
+                                   capture_output=True, text=True)
+            if process.returncode != 0:
+                print(f"Warning: namcap found issues with {self.pkgname}:")
+                print(process.stdout)
+                if not args.force:
+                    print("Use --force to push anyway")
+                    return 1
+        except FileNotFoundError:
+            print(f"Warning: namcap not found, skipping PKGBUILD validation for {self.pkgname}")
+        
+        return self.git_push()
+
     def git_push(self):
         process = subprocess.run(['git', 'push'], cwd=self.pkgbuilddir)
         return process.returncode
@@ -577,7 +882,8 @@ class pkgwap:
 def scanpkglist(pkgm):
     for pkgbuild in pkgm.pkglist:
         package = pkgwap(pkgbuild, pkgm)
-        if package.isdiff_pkgaur():
+        has_diff = package.isdiff_pkgaur()
+        if has_diff:
             # 1: difference between local and AUR .SRCINFO
             package.isnew |= 1
         if isnew_version(package.upstreamver, package.pkgver):
@@ -588,6 +894,9 @@ def scanpkglist(pkgm):
             package.isnew |= 4
         if not args.warningonly or package.isnew > 0:
             package.print_line()
+            # Show diff if status 1 is set but versions match
+            if args.diff and (package.isnew & 1) and package.pkgverrel == package.aurverrel:
+                package.show_srcinfo_diff()
         # update
         if args.update and (((package.isnew & 2) and is_canonical(package.upstreamver)) or args.force):
             if package.update_pkgbuild():
@@ -598,36 +907,35 @@ def scanpkglist(pkgm):
                 sys.exit(1)  # error
         # push
         if args.push and (isnew_version(package.pkgverrel, package.aurverrel) or args.force):
-            if package.git_commit(f'Update to version {package.pkgverrel}') or package.git_push():
+            print(f"Pushing {package.pkgname} version {package.pkgverrel} to AUR...")
+            if package.git_push_with_validation():
+                print(f"Failed to push {package.pkgname}")
                 sys.exit(1)  # error
+            else:
+                print(f"Successfully pushed {package.pkgname} to AUR")
         if package.isnew & 1:
             # fetch aur
             pass
 
 
 def walklevel(mydir, level):
-    # remove tailing /
-    mydir = mydir.rstrip(os.path.sep)
-    # assertion error if not directory
-    assert os.path.isdir(mydir)
-    num_sep = mydir.count(os.path.sep)
+    base = os.path.abspath(mydir).removesuffix(os.path.sep).count(os.path.sep)
     for root, dirs, files in os.walk(mydir):
         yield root, dirs, files
-        num_sep_this = root.count(os.path.sep)
-        if num_sep + level <= num_sep_this:
-            del dirs[:]
+        if root.count(os.path.sep) - base >= level:
+            dirs.clear()
 
 
 def scandir(path, level):
     if not os.path.exists(path):
         print("error: directory does not exists")
         return
-    pkgwap(None, None).print_line()
     # create list of path to PKGBUILD files
-    pathlist = []
-    for (root, dirs, files) in walklevel(path, level):
-        if "PKGBUILD" in files:
-            pathlist.append(os.path.join(root, 'PKGBUILD'))
+    pathlist = [
+        os.path.join(root, 'PKGBUILD')
+        for root, dirs, files in walklevel(path, level)
+        if "PKGBUILD" in files
+    ]
     pathlist.sort()
     # create list of pkgbuilds (pkgm.pkglist)
     pkgm = PKGmulti()
@@ -638,6 +946,8 @@ def scandir(path, level):
             pass
     # query AUR RPC from all pkgbuilds version
     pkgm.getaurversions()
+    # print header after AUR query
+    pkgwap(None, None).print_line()
     scanpkglist(pkgm)
 
 
